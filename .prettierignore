@@ -1,0 +1,5 @@
+dist
+build
+.mygo
+node_modules
+src/mygo.ts

@@ -1,0 +1,197 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/jetbrains-mono";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+  Acro draws captured HTTP traffic, so the interface is nearly monochrome and
+  color is spent only on outcomes: a response's status, a failure, a warning.
+  The accent is ZAP's interception blue and marks the one action that cuts
+  traffic — sending a request — plus focus and the chosen row.
+*/
+@theme inline {
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-heading: var(--font-sans);
+  --font-mono: "JetBrains Mono Variable", ui-monospace, monospace;
+
+  --color-canvas: var(--canvas);
+  --color-panel: var(--panel);
+  --color-rail: var(--rail);
+  --color-ink: var(--ink);
+  --color-ink-muted: var(--ink-muted);
+  --color-ink-faint: var(--ink-faint);
+  --color-hairline: var(--hairline);
+  --color-intercept: var(--intercept);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-fail: var(--fail);
+
+  --color-background: var(--canvas);
+  --color-foreground: var(--ink);
+  --color-card: var(--panel);
+  --color-card-foreground: var(--ink);
+  --color-popover: var(--panel);
+  --color-popover-foreground: var(--ink);
+  --color-primary: var(--intercept);
+  --color-primary-foreground: var(--intercept-ink);
+  --color-secondary: var(--rail);
+  --color-secondary-foreground: var(--ink);
+  --color-muted: var(--rail);
+  --color-muted-foreground: var(--ink-muted);
+  --color-accent: var(--rail);
+  --color-accent-foreground: var(--ink);
+  --color-destructive: var(--fail);
+  --color-border: var(--hairline);
+  --color-input: var(--hairline);
+  --color-ring: var(--intercept);
+  --color-sidebar: var(--rail);
+  --color-sidebar-foreground: var(--ink-muted);
+  --color-sidebar-primary: var(--intercept);
+  --color-sidebar-primary-foreground: var(--intercept-ink);
+  --color-sidebar-accent: var(--rail-hover);
+  --color-sidebar-accent-foreground: var(--ink);
+  --color-sidebar-border: var(--hairline);
+  --color-sidebar-ring: var(--intercept);
+
+  --radius-xs: 3px;
+  --radius-sm: 5px;
+  --radius-md: 7px;
+  --radius-lg: 9px;
+  --radius-xl: 12px;
+
+  --text-micro: 11px;
+  --text-mini: 11.5px;
+  --text-body: 12.5px;
+  --text-title: 14px;
+}
+
+:root {
+  --canvas: #fbfbfc;
+  --panel: #ffffff;
+  --rail: #f6f6f7;
+  --rail-hover: #ececee;
+  --ink: #17181a;
+  --ink-muted: #71757b;
+  --ink-faint: #9a9ea4;
+  --hairline: #e6e7e9;
+  --intercept: #0d64b0;
+  --intercept-ink: #ffffff;
+  --ok: #12924f;
+  --warn: #9a6400;
+  --fail: #b42318;
+  --radius: 7px;
+  color-scheme: light;
+}
+
+.dark {
+  --canvas: #08090a;
+  --panel: #121415;
+  --rail: #0e1011;
+  --rail-hover: #1b1e20;
+  --ink: #ecedee;
+  --ink-muted: #8b9096;
+  --ink-faint: #5f646a;
+  --hairline: #232527;
+  --intercept: #4d9fe0;
+  --intercept-ink: #08131c;
+  --ok: #4ec98a;
+  --warn: #e0a458;
+  --fail: #f0736f;
+  color-scheme: dark;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    @apply font-sans;
+    font-size: calc(16px * var(--mygo-text-scale, 1));
+    -webkit-font-smoothing: antialiased;
+  }
+  body {
+    @apply bg-canvas text-ink;
+    font-size: var(--text-body);
+    line-height: 1.5;
+    font-feature-settings: "cv11", "ss01";
+    overscroll-behavior: none;
+  }
+  /* Chrome scrolls the panes, not the window. */
+  html,
+  body,
+  #root {
+    height: 100%;
+    overflow: hidden;
+  }
+  ::selection {
+    background: color-mix(in oklab, var(--intercept) 26%, transparent);
+  }
+  :focus-visible {
+    outline: 2px solid var(--intercept);
+    outline-offset: 2px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+@utility hairline-b {
+  border-bottom: 1px solid var(--hairline);
+}
+
+@layer components {
+  .workspace-sidebar {
+    display: flex;
+    flex-direction: column;
+    width: 260px;
+    flex-shrink: 0;
+    min-height: 0;
+    background: var(--rail);
+    border-right: 1px solid var(--hairline);
+  }
+}
+
+@utility hairline-r {
+  border-right: 1px solid var(--hairline);
+}
+
+/* Protocol data reads as data: tabular, compact, unletter-spaced. */
+@utility proto {
+  font-family: var(--font-mono);
+  font-size: var(--text-micro);
+  font-variant-ligatures: none;
+  letter-spacing: -0.01em;
+}
+
+.message-code,
+textarea.message-code {
+  font-family: "JetBrains Mono Variable", monospace;
+  font-size: 12px;
+  line-height: 20px;
+  tab-size: 2;
+}
+.syntax-preview pre {
+  margin: 0;
+  background: transparent !important;
+  font: inherit;
+}
+.syntax-preview pre + pre {
+  margin-top: 20px;
+}
+.syntax-preview.code-wrap pre,
+.syntax-preview.code-wrap code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.dark .syntax-preview .shiki,
+.dark .syntax-preview .shiki span {
+  color: var(--shiki-dark) !important;
+}

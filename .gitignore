@@ -1,0 +1,9 @@
+node_modules/
+dist/
+build/
+.mygo/
+.env
+.direnv/
+*.log
+test-results/
+.temp/
