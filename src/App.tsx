@@ -28,6 +28,7 @@ import {
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectGroup, SelectItem } from "@/components/ui/select";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { BrowserView } from "@/components/browser-view";
 import { Repeater } from "@/components/repeater";
 import { HistoryView } from "@/components/history-view";
 import { ContextView } from "@/components/context-view";
@@ -555,7 +556,23 @@ export function App() {
                 )}
               </RequestTabs>
             ) : (
-              <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-4 lg:p-5">
+              <div
+                className={
+                  view === "browser"
+                    ? "flex min-h-0 flex-1 flex-col overflow-hidden p-4 lg:p-5"
+                    : "flex min-h-0 flex-1 flex-col overflow-y-auto p-4 lg:p-5"
+                }
+              >
+                {/* The browser places a native WebView in this view's slot. It
+                    must not sit in a scrolling ancestor, which would move the
+                    slot under the pointer and clip the page. */}
+                {view === "browser" && (
+                  <BrowserView
+                    projectId={projectId}
+                    t={t}
+                    suspended={palette || (narrow && sidebar)}
+                  />
+                )}
                 {view === "capture" && (
                   <CaptureView
                     traffic={traffic}

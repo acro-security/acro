@@ -11,11 +11,6 @@ mygo does here what Tauri does elsewhere: it owns the window, the system webview
 and IPC. It does not draw the interface, so the UI is ordinary web code —
 React, TypeScript, Tailwind, shadcn/ui — and the backend stays in Go.
 
-```text
-React + shadcn/ui  ──mygo IPC──>  replay.Service (Go)  ──>  net/http
-      src/                       main.go, internal/replay
-```
-
 `internal/replay` owns the transport-neutral `Input`, `Result` and `Executor`
 contract. `main.go` binds `replay.Service`, which `mygo generate` turns into the
 typed client at `src/mygo.ts`. A future agent harness calls the same `Executor`.

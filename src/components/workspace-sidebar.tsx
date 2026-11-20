@@ -1,5 +1,6 @@
 import { useState, type ComponentType } from "react";
 import {
+  Globe,
   ChevronDown,
   Folder,
   FolderClock,
@@ -25,7 +26,7 @@ import { cn } from "@/lib/utils";
 import type { Dictionary } from "@/i18n";
 import type { Project, SessionDraft } from "@/workspace";
 
-export type WorkbenchView = "repeater" | "capture" | "history" | "context" | "session";
+export type WorkbenchView = "repeater" | "capture" | "history" | "context" | "session" | "browser";
 
 export function WorkspaceSidebar({
   projects,
@@ -60,6 +61,7 @@ export function WorkspaceSidebar({
   const [name, setName] = useState("");
   const [collapsed, setCollapsed] = useState<string[]>([]);
   const features: { view: WorkbenchView; label: string; icon: ComponentType; count?: number }[] = [
+    { view: "browser", label: t.browser, icon: Globe },
     { view: "repeater", label: t.repeater, icon: Repeat2 },
     { view: "capture", label: t.capture, icon: Radio, count: counts.capture },
     { view: "history", label: t.history, icon: FolderClock, count: counts.history },

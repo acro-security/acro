@@ -4,6 +4,18 @@ import { bind, event } from "mygo-runtime";
 
 // ---- Types ----
 
+export interface Account {
+  id: string;
+  name: string;
+  username: string;
+  origins: string[];
+}
+
+export interface FillInput {
+  tabId: string;
+  credentialId: string;
+}
+
 export interface Header {
   name: string;
   value: string;
@@ -14,6 +26,18 @@ export interface Input {
   raw: string;
   followRedirects: boolean;
   timeoutSeconds: number;
+}
+
+export interface LoginInput {
+  email: string;
+  password: string;
+  code: string;
+  server: string;
+}
+
+export interface OpenInput {
+  url: string;
+  projectId: string;
 }
 
 export interface Result {
@@ -29,6 +53,14 @@ export interface Result {
   url: string;
 }
 
+export interface SaveInput {
+  id: string;
+  name: string;
+  url: string;
+  username: string;
+  password: string;
+}
+
 export interface Settings {
   running: boolean;
   addr: string;
@@ -36,6 +68,29 @@ export interface Settings {
   caCert?: string;
   captured: number;
   error?: string;
+}
+
+export interface State {
+  tabs: Tab[];
+  selectedId: string;
+}
+
+export interface Status {
+  available: boolean;
+  state: string;
+  server: string;
+  email: string;
+}
+
+export interface Tab {
+  id: string;
+  projectId: string;
+  url: string;
+  title: string;
+  loading: boolean;
+  back: boolean;
+  forward: boolean;
+  error: string;
 }
 
 export interface Traffic {
@@ -60,6 +115,17 @@ export interface Traffic {
   error?: string;
 }
 
+export interface Viewport {
+  tabId: string;
+  visible: boolean;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  clientWidth: number;
+  clientHeight: number;
+}
+
 // ---- Services ----
 
 /**
@@ -69,6 +135,30 @@ export interface Traffic {
 export const Replay = {
   /** Send replays input and returns the response, or the error that stopped it. */
   send: bind<[Input], Result>("Replay.Send", (input: Input) => [input]),
+} as const;
+
+/** Service exposes browser operations, but never a credential getter or arbitrary script evaluation. */
+export const Browser = {
+  action: bind<[string, string], void>("Browser.Action", (id: string, action: string) => [id, action]),
+  close: bind<[string], State>("Browser.Close", (id: string) => [id]),
+  fill: bind<[FillInput], void>("Browser.Fill", (in_: FillInput) => [in_]),
+  navigate: bind<[string, string], void>("Browser.Navigate", (id: string, raw: string) => [id, raw]),
+  open: bind<[OpenInput], State>("Browser.Open", (in_: OpenInput) => [in_]),
+  select: bind<[string], State>("Browser.Select", (id: string) => [id]),
+  setViewport: bind<[Viewport], void>("Browser.SetViewport", (v: Viewport) => [v]),
+  status: bind<[], State>("Browser.Status", () => []),
+} as const;
+
+/** VaultService only returns metadata; passwords pass directly to the local page executor. */
+export const Vault = {
+  accounts: bind<[string], Account[]>("Vault.Accounts", (rawURL: string) => [rawURL]),
+  delete: bind<[string, string], void>("Vault.Delete", (id: string, rawURL: string) => [id, rawURL]),
+  lock: bind<[], void>("Vault.Lock", () => []),
+  logout: bind<[], void>("Vault.Logout", () => []),
+  save: bind<[SaveInput], Account>("Vault.Save", (in_: SaveInput) => [in_]),
+  status: bind<[], Status>("Vault.Status", () => []),
+  sync: bind<[], void>("Vault.Sync", () => []),
+  unlock: bind<[LoginInput], Status>("Vault.Unlock", (in_: LoginInput) => [in_]),
 } as const;
 
 /**
@@ -104,6 +194,7 @@ export const Capture = {
 
 /** Events sent by the Go side. Subscribe with `events.name.on(listener)`. */
 export const events = {
+  browserState: event<State>("browser:state"),
   /**
    * Traffic is sent to the page as the proxy records it, so the list grows
    * without polling.

@@ -141,3 +141,23 @@ encoding, compression and HTTP options. Concurrent identical requests share one
 worker job, and remounted views synchronously reuse the decoded, formatted and
 highlighted result. Worker failures are retried on subsequent requests. The cache
 is not written to browser storage and is discarded on reload.
+
+## Native browser and credential executor
+
+The top-level window now uses native Content to position the React shell WebView
+and an independent guest WebView over the browser content slot. A ResizeObserver
+reports logical bounds; guest views hide while React overlays are open, on
+navigation away from Browser, or while the shell reloads. Guest pages use
+`PageOptions.Untrusted` and project-specific persistent MyGo sessions. Their
+navigation is limited to HTTP(S), and they cannot invoke Acro bindings or receive
+application broadcasts.
+
+`internal/vault` wraps the official Password Manager CLI using an isolated
+profile and a memory-only unlock session. CLI errors are sanitized. Secrets enter
+child processes through environment/stdin rather than command arguments. The
+bound Vault facade returns only account metadata. Browser.Fill obtains the
+current native page URL, checks exact origin against stored URIs, rechecks after
+the credential lookup, and verifies origin and form action again in the page
+executor before writing visible input fields. It never submits the form.
+Future model tools must redact credential-bearing DOM and capture bodies before
+export; this patch introduces no model connection or raw credential tool.

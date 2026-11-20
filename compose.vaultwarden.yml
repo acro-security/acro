@@ -1,0 +1,15 @@
+name: acro-vault
+services:
+  vaultwarden:
+    image: vaultwarden/server:1.37.5
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8222:80"
+    environment:
+      DOMAIN: "http://localhost:8222"
+      SIGNUPS_ALLOWED: "${ACRO_VAULT_SIGNUPS:-true}"
+      INVITATIONS_ALLOWED: "false"
+    volumes:
+      - vault-data:/data
+volumes:
+  vault-data:
