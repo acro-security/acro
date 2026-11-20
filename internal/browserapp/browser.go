@@ -7,10 +7,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"strings"
 	"time"
 
+	"acro/internal/capture"
 	"acro/internal/vault"
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
@@ -60,12 +62,15 @@ var Changed = mygo.NewEvent[State]("browser:state")
 
 // Host is owned by the native main thread. It is never bound to JavaScript.
 type Host struct {
-	win      *mygo.Window
-	shell    *mygo.WebView
-	pages    []*page
-	selected string
-	viewport Viewport
-	sessions map[string]*mygo.Session
+	win       *mygo.Window
+	shell     *mygo.WebView
+	pages     []*page
+	selected  string
+	viewport  Viewport
+	sessions  map[string]*mygo.Session
+	network   *browserNetwork
+	proxy     capture.Settings
+	openPopup func(OpenInput)
 }
 
 func NewHost() *Host { return &Host{sessions: map[string]*mygo.Session{}} }
@@ -76,10 +81,12 @@ func (h *Host) Attach(w *mygo.Window) error {
 		return err
 	}
 	h.shell = v
-	// Do not hide the guest when the shell reloads: the workbench sends a
-	// placement only when it differs from the last one, so a hide here could
-	// outlive the reload and leave the page invisible. The guest keeps its
-	// place, and a reloaded workbench measures and places it again.
+	w.OnClosed(func() {
+		if h.network != nil {
+			h.network.close()
+		}
+	})
+	v.Page().OnDidNavigate(func(string) { h.viewport.Visible = false; w.Invalidate() })
 	w.Invalidate()
 	return nil
 }
@@ -147,9 +154,22 @@ func (h *Host) open(in OpenInput) (State, error) {
 		session = mygo.NewSession("browser:" + in.ProjectID)
 		h.sessions[in.ProjectID] = session
 	}
-	v, err := h.win.NewWebView(mygo.WebViewOptions{URL: raw, Page: mygo.PageOptions{Session: session, Untrusted: true}})
+	if h.network == nil {
+		network, err := newBrowserNetwork()
+		if err != nil {
+			return h.snapshot(), err
+		}
+		h.network = network
+	}
+	before := h.network.widgets(h.win.NativeHandle())
+	// A blank page cannot issue target requests before the proxy is configured.
+	v, err := h.win.NewWebView(mygo.WebViewOptions{URL: "about:blank", Page: mygo.PageOptions{Session: session, Untrusted: true}})
 	if err != nil {
 		return h.snapshot(), errors.New("Cannot create the browser WebView")
+	}
+	if err = h.network.configure(h.win.NativeHandle(), before, h.proxy.Addr, h.proxy.CACert); err != nil {
+		v.Destroy()
+		return h.snapshot(), err
 	}
 	var id [16]byte
 	_, _ = rand.Read(id[:])
@@ -164,38 +184,77 @@ func (h *Host) open(in OpenInput) (State, error) {
 	})
 	pg.SetWindowOpenHandler(func(req mygo.WindowOpenRequest) *mygo.WindowOptions {
 		if req.UserInitiated {
-			go func() { mygo.RunOnMain(func() { _, _ = h.open(OpenInput{URL: req.URL, ProjectID: in.ProjectID}) }) }()
+			if h.openPopup != nil {
+				h.openPopup(OpenInput{URL: req.URL, ProjectID: in.ProjectID})
+			}
 		}
 		return nil
 	})
 	pg.OnDidNavigate(func(string) { p.info.Error = ""; h.refresh(p) })
 	pg.OnPageTitleUpdated(func(e *mygo.TitleEvent) { p.info.Title = e.Title; h.changed() })
 	pg.OnDidFinishLoad(func() { p.info.Loading = false; h.refresh(p) })
-	pg.OnDidFailLoad(func(_ *mygo.LoadError) {
-		p.info.Error = "Page could not be loaded"
+	pg.OnDidFailLoad(func(e *mygo.LoadError) {
+		p.info.Error = fmt.Sprintf("Page could not be loaded: %s (%d)", e.Description, e.Code)
 		p.info.Loading = false
 		h.changed()
 	})
+	if err = pg.LoadURL(raw); err != nil {
+		p.info.Error = "Page could not be loaded"
+	}
 	h.changed()
 	return h.snapshot(), nil
 }
 
 // Service exposes browser operations, but never a credential getter or arbitrary script evaluation.
 type Service struct {
-	host  *Host
-	vault *vault.Manager
+	host    *Host
+	vault   *vault.Manager
+	capture captureController
 }
 
-func NewService(h *Host, v *vault.Manager) *Service { return &Service{h, v} }
+type captureController interface {
+	Start() (capture.Settings, error)
+}
+
+func NewService(h *Host, v *vault.Manager, c captureController) *Service {
+	s := &Service{host: h, vault: v, capture: c}
+	h.openPopup = func(in OpenInput) { go func() { _, _ = s.Open(in) }() }
+	return s
+}
+
+// TrustProxyCertificate runs on the native thread and never installs a system CA.
+func (h *Host) TrustProxyCertificate(host string, der []byte) {
+	mygo.RunOnMain(func() {
+		if h.network != nil {
+			h.network.trust(host, der)
+		}
+	})
+}
+func (s *Service) ensureCapture() (capture.Settings, error) {
+	if s.capture == nil {
+		return capture.Settings{}, errors.New("Browser capture is not configured")
+	}
+	state, err := s.capture.Start()
+	if err != nil {
+		return state, err
+	}
+	if !state.Running || state.Addr == "" {
+		return state, errors.New("The browser capture proxy is not running")
+	}
+	return state, nil
+}
 func (s *Service) Status() State {
 	var out State
 	mygo.RunOnMain(func() { out = s.host.snapshot() })
 	return out
 }
 func (s *Service) Open(in OpenInput) (State, error) {
+	proxy, err := s.ensureCapture()
+	if err != nil {
+		return State{}, err
+	}
 	var out State
-	var err error
-	mygo.RunOnMain(func() { out, err = s.host.open(in) })
+	mygo.RunOnMain(func() { s.host.proxy = proxy; out, err = s.host.open(in) })
 	return out, err
 }
 func (s *Service) Select(id string) (State, error) {
@@ -241,8 +300,17 @@ func (s *Service) Navigate(id, raw string) error {
 	if _, err := vault.Origin(raw); err != nil {
 		return err
 	}
-	var err error
+	proxy, err := s.ensureCapture()
+	if err != nil {
+		return err
+	}
 	mygo.RunOnMain(func() {
+		s.host.proxy = proxy
+		if s.host.network != nil {
+			if err = s.host.network.update(proxy.Addr, proxy.CACert); err != nil {
+				return
+			}
+		}
 		p := s.host.find(id)
 		if p == nil {
 			err = errors.New("Browser tab no longer exists")
@@ -256,8 +324,28 @@ func (s *Service) Navigate(id, raw string) error {
 	return err
 }
 func (s *Service) Action(id, action string) error {
+	switch action {
+	case "back", "forward", "reload", "stop":
+	default:
+		return errors.New("Unknown browser action")
+	}
 	var err error
+	var proxy capture.Settings
+	if action != "stop" {
+		proxy, err = s.ensureCapture()
+		if err != nil {
+			return err
+		}
+	}
 	mygo.RunOnMain(func() {
+		if action != "stop" {
+			s.host.proxy = proxy
+			if s.host.network != nil {
+				if err = s.host.network.update(proxy.Addr, proxy.CACert); err != nil {
+					return
+				}
+			}
+		}
 		p := s.host.find(id)
 		if p == nil {
 			err = errors.New("Browser tab no longer exists")

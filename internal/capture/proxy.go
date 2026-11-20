@@ -66,6 +66,11 @@ type Settings struct {
 
 // Options configure a proxy before it starts.
 type Options struct {
+	// OnCertificate receives only the locally generated leaf certificate, before
+	// the client TLS handshake. Embedded browsers use it to pin Acro's certificate
+	// for each requested host, including third-party HTTPS subresources.
+	OnCertificate func(host string, der []byte)
+
 	// Port is the listening port on 127.0.0.1; 0 picks a free one.
 	Port int
 	// CADir is where the certificate authority is kept, created on first use.
@@ -249,7 +254,12 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request) {
 	original := r.Clone(r.Context())
 	traffic := Traffic{ID: newID(), At: start, Method: r.Method, URL: r.URL.String(), Host: r.URL.Host, Scheme: r.URL.Scheme, Encoding: "utf-8"}
 	var response *http.Response
-	defer func() {
+	recorded := false
+	finish := func() {
+		if recorded {
+			return
+		}
+		recorded = true
 		requestData, requestSize := requestBody.snapshot()
 		responseData, responseSize := responseBody.snapshot()
 		traffic.RequestSize = requestSize
@@ -268,7 +278,8 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request) {
 		}
 		traffic.DurationMS = time.Since(start).Milliseconds()
 		p.record(traffic)
-	}()
+	}
+	defer finish()
 	out := r.Clone(r.Context())
 	out.RequestURI = ""
 	out.Close = false
@@ -276,7 +287,13 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request) {
 	if r.Body != nil && r.Body != http.NoBody {
 		out.Body = &recordingBody{ReadCloser: r.Body, capture: requestBody}
 	}
+	upgrade := r.Header.Get("Upgrade")
+	upgradeRequested := upgrade != "" && headerToken(r.Header, "Connection", "upgrade")
 	removeHopHeaders(out.Header)
+	if upgradeRequested {
+		out.Header.Set("Connection", "Upgrade")
+		out.Header.Set("Upgrade", upgrade)
+	}
 	resp, err := p.client.Do(out)
 	if err != nil {
 		traffic.Error = err.Error()
@@ -287,10 +304,17 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request) {
 	response = resp
 	traffic.Status, traffic.StatusText, traffic.ContentType = resp.StatusCode, http.StatusText(resp.StatusCode), resp.Header.Get("Content-Type")
 	if resp.StatusCode == http.StatusSwitchingProtocols {
-		traffic.Error = "Protocol upgrades are not supported"
-		http.Error(w, traffic.Error, http.StatusBadGateway)
+		if !upgradeRequested || !strings.EqualFold(resp.Header.Get("Upgrade"), upgrade) {
+			traffic.Error = "Unexpected protocol upgrade"
+			http.Error(w, traffic.Error, http.StatusBadGateway)
+			return
+		}
+		if err := relayUpgrade(w, r, resp, finish); err != nil {
+			traffic.Error = err.Error()
+		}
 		return
 	}
+
 	headers := resp.Header.Clone()
 	removeHopHeaders(headers)
 	copyHeaders(w.Header(), headers)
@@ -392,6 +416,9 @@ func (p *Proxy) tunnelTLS(ctx context.Context, reader *bufio.Reader, conn net.Co
 	cfg, err := p.ca.tlsConfig(target)
 	if err != nil {
 		return
+	}
+	if p.opts.OnCertificate != nil {
+		p.opts.OnCertificate(canonicalHost(target), cfg.Certificates[0].Certificate[0])
 	}
 	tlsConn := tls.Server(&readerConn{Conn: conn, r: reader}, cfg)
 	defer tlsConn.Close()

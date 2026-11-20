@@ -104,10 +104,9 @@ providers. Human and agent callers should produce the same request and response
 artifacts; the current Context export is an inspectable snapshot, not an agent
 runtime.
 
-Next capability slices are durable traffic storage, an explicit local proxy, an
-interception queue, HTTPS certificate lifecycle, request comparison, controlled
-batch replay and harness tools. Proxy interception, scanning, extension APIs and
-model execution are not implemented. Acro independently implements capabilities
+Next capability slices are durable traffic storage, an interception queue,
+request comparison, controlled batch replay and harness tools. Request pausing,
+scanning, extension APIs and model execution are not implemented. Acro independently implements capabilities
 inspired by ZAP, Burp Suite and Caido rather than wrapping them.
 
 ## Project and session workspace
@@ -151,6 +150,23 @@ navigation away from Browser, or while the shell reloads. Guest pages use
 `PageOptions.Untrusted` and project-specific persistent MyGo sessions. Their
 navigation is limited to HTTP(S), and they cannot invoke Acro bindings or receive
 application broadcasts.
+
+On Linux, `internal/browserapp/network_linux.go` configures each guest session's
+WebKitGTK WebsiteDataManager with an explicit Acro HTTP proxy and no bypass
+hosts. The guest starts at `about:blank`; the target loads only after configuration.
+The adapter uses public GTK/WebKit APIs through purego, because MyGo currently
+has no proxy API. The shell and vault CLI keep their own network settings.
+Unsupported platforms return an error instead of silently connecting directly.
+
+Before a CONNECT TLS handshake, the proxy provides its generated leaf certificate
+to the host. The guest WebContext allows that certificate for that hostname only,
+including third-party HTTPS resources. No system CA is installed and upstream
+certificates are still verified by Go. WebRTC is disabled because direct UDP
+connections cannot pass through the HTTP proxy. HTTP, HTTPS and WebSocket upgrade
+handshakes are captured; upgraded streams are relayed bidirectionally and closed
+on proxy stop. WebSocket frames have no separate capture representation yet.
+Explicit navigation and reload restart capture when needed and refresh all guest
+proxy settings; stopped capture has no direct fallback.
 
 `internal/vault` wraps the official Password Manager CLI using an isolated
 profile and a memory-only unlock session. CLI errors are sanitized. Secrets enter

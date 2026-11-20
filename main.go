@@ -32,9 +32,9 @@ func main() {
 	credentials := vault.New(filepath.Join(config, "acro", "bitwarden"))
 	defer credentials.Lock()
 	host := browserapp.NewHost()
-	mygo.BindAs("Browser", browserapp.NewService(host, credentials))
+	capturing := captureapp.NewService(host.TrustProxyCertificate)
+	mygo.BindAs("Browser", browserapp.NewService(host, credentials, capturing))
 	mygo.BindAs("Vault", browserapp.NewVaultService(credentials))
-	capturing := captureapp.NewService()
 	defer capturing.Close()
 	mygo.BindAs("Capture", capturing)
 	mygo.App.WhenReady(func() {

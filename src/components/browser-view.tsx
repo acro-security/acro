@@ -111,6 +111,8 @@ export function BrowserView({
     if (!native) return;
     let disposed = false,
       live = false;
+    const controller = new AbortController();
+    let timer: number | undefined;
     const off = watchBrowser((next) => {
       live = true;
       if (!disposed) setState(next);
@@ -120,29 +122,31 @@ export function BrowserView({
         if (!disposed && !live) setState(next);
       })
       .catch(failure);
-    void Vault.status()
-      .then((next) => {
+    async function pollVault(initial: boolean) {
+      try {
+        const next = await Vault.status.with({ signal: controller.signal })();
         if (!disposed) {
           setStatus(next);
-          setLogin((v) => ({
-            ...v,
-            email: next.email,
-            server: next.state === "unauthenticated" ? v.server : next.server,
-          }));
+          if (initial)
+            setLogin((v) => ({
+              ...v,
+              email: next.email,
+              server: next.state === "unauthenticated" ? v.server : next.server,
+            }));
         }
-      })
-      .catch(failure);
-    const timer = window.setInterval(() => {
-      void Vault.status()
-        .then((next) => {
-          if (!disposed) setStatus(next);
-        })
-        .catch(() => {});
-    }, 15000);
+      } catch (error) {
+        if (initial && !disposed) failure(error);
+      } finally {
+        // A slow CLI invocation must finish before another poll starts.
+        if (!disposed) timer = window.setTimeout(() => void pollVault(false), 15000);
+      }
+    }
+    void pollVault(true);
     return () => {
       disposed = true;
+      controller.abort();
       off();
-      clearInterval(timer);
+      clearTimeout(timer);
     };
   }, []);
   useEffect(() => {

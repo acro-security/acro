@@ -23,17 +23,22 @@ var State = mygo.NewEvent[capture.Settings]("capture:state")
 // Service is the IPC surface for capturing. It owns one proxy for the app's
 // life, so starting and stopping is cheap and the certificate is stable.
 type Service struct {
-	lifecycle sync.Mutex
-	mu        sync.Mutex
-	proxy     *capture.Proxy
-	port      int
-	recent    []capture.Traffic
+	lifecycle     sync.Mutex
+	mu            sync.Mutex
+	proxy         *capture.Proxy
+	port          int
+	recent        []capture.Traffic
+	onCertificate func(string, []byte)
 }
 
 // NewService prepares the proxy without listening yet. The certificate
 // authority is created on first use under the app's user data directory.
-func NewService() *Service {
-	return &Service{port: 8081}
+func NewService(onCertificate ...func(string, []byte)) *Service {
+	s := &Service{port: 8081}
+	if len(onCertificate) > 0 {
+		s.onCertificate = onCertificate[0]
+	}
+	return s
 }
 
 // Configure sets the port the proxy listens on.
@@ -70,8 +75,9 @@ func (s *Service) Start() (capture.Settings, error) {
 		return capture.Settings{}, err
 	}
 	proxy, err := capture.New(capture.Options{
-		Port:  s.port,
-		CADir: filepath.Join(dir, "acro", "proxy"),
+		Port:          s.port,
+		OnCertificate: s.onCertificate,
+		CADir:         filepath.Join(dir, "acro", "proxy"),
 		OnTraffic: func(t capture.Traffic) {
 			s.remember(t)
 			_ = Traffic.Broadcast(t)

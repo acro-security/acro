@@ -6,12 +6,21 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha1"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
+	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,9 +28,11 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"acro/internal/browserapp"
+	"acro/internal/capture"
 	"acro/internal/vault"
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
@@ -52,6 +63,49 @@ func main() {
 		fmt.Fprint(w, `<!doctype html><title>Local login fixture</title><form><label>Username<input name="username" autocomplete="username"></label><label>Password<input name="password" type="password"></label><button>Login</button></form><audio id="test-audio" controls preload="auto" src="/tone.wav"></audio><div style="height:4000px"><p id="heartbeat"></p></div><script>setInterval(()=>{document.querySelector("#heartbeat").textContent=String(Date.now());window.testAllocation=Array.from({length:5000},()=>({value:Math.random()}))},100)</script>`)
 	}))
 	defer site.Close()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		log.Fatal(err)
+	}
+	template := &x509.Certificate{SerialNumber: big.NewInt(1), NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), DNSNames: []string{"localhost"}, IPAddresses: []net.IP{net.ParseIP("127.0.0.1")}, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, KeyUsage: x509.KeyUsageDigitalSignature}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		log.Fatal(err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		log.Fatal(err)
+	}
+	roots := x509.NewCertPool()
+	roots.AddCert(cert)
+	secure := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		switch r.URL.Path {
+		case "/socket":
+			conn, buffer, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				return
+			}
+			defer conn.Close()
+			digest := sha1.Sum([]byte(r.Header.Get("Sec-WebSocket-Key") + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
+			_, _ = fmt.Fprintf(buffer, "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: %s\r\n\r\n", base64.StdEncoding.EncodeToString(digest[:]))
+			_, _ = buffer.Write([]byte{0x81, 2, 'o', 'k'})
+			_ = buffer.Flush()
+			_, _ = io.Copy(io.Discard, buffer)
+		case "/asset.js":
+			w.Header().Set("Content-Type", "application/javascript")
+			fmt.Fprint(w, `document.documentElement.dataset.asset="loaded"`)
+		case "/post", "/blocked":
+			fmt.Fprint(w, "ok")
+		default:
+			w.Header().Set("Content-Type", "text/html")
+			_, port, _ := net.SplitHostPort(r.Host)
+			fmt.Fprintf(w, `<!doctype html><title>Secure fixture</title><script src="https://localhost:%s/asset.js"></script>`, port)
+		}
+	}))
+	secure.TLS = &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}}}
+	secure.StartTLS()
+	defer secure.Close()
 	data, _ := json.Marshal(map[string]any{"id": "11111111-2222-4333-8444-555555555555", "type": 1, "name": "Fixture account", "login": map[string]any{"username": "fixture-user", "password": "fixture-secret", "uris": []map[string]string{{"uri": site.URL}}}})
 	token := base64.StdEncoding.EncodeToString([]byte("01234567890123456789012345678901"))
 	script := "#!/bin/sh\ncase \"$1\" in\nstatus) if [ -n \"$BW_SESSION\" ]; then echo '{\"status\":\"unlocked\",\"serverUrl\":\"http://localhost\"}'; else echo '{\"status\":\"locked\",\"serverUrl\":\"http://localhost\"}'; fi;;\nunlock) echo " + token + ";;\nlist) cat <<'FIXTURE'\n[" + string(data) + "]\nFIXTURE\n;;\nget) cat <<'FIXTURE'\n" + string(data) + "\nFIXTURE\n;;\n*) exit 1;;\nesac\n"
@@ -64,7 +118,18 @@ func main() {
 	manager := vault.New(filepath.Join(dir, "profile"))
 	defer manager.Lock()
 	host := browserapp.NewHost()
-	service := browserapp.NewService(host, manager)
+	var captureMu sync.Mutex
+	var captured []capture.Traffic
+	upstreamTLS := &tls.Config{RootCAs: roots}
+	if os.Getenv("ACRO_BROWSER_TEST_URL") != "" {
+		upstreamTLS = nil
+	}
+	proxy, err := capture.New(capture.Options{Port: 0, CADir: filepath.Join(dir, "ca"), OnCertificate: host.TrustProxyCertificate, UpstreamTLS: upstreamTLS, OnTraffic: func(tr capture.Traffic) { captureMu.Lock(); defer captureMu.Unlock(); captured = append(captured, tr) }})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer proxy.Stop()
+	service := browserapp.NewService(host, manager, proxy)
 	mygo.BindAs("Browser", service)
 	mygo.BindAs("Vault", browserapp.NewVaultService(manager))
 	// The normal shell also requests these at mount.
@@ -77,7 +142,46 @@ func main() {
 			mygo.App.Quit()
 			return
 		}
-		go func() { defer mygo.App.Quit(); result <- verify(host, service, manager, site.URL) }()
+		go func() {
+			defer mygo.App.Quit()
+			if target := os.Getenv("ACRO_BROWSER_TEST_URL"); target != "" {
+				err := verifyExternal(host, service, target)
+				captureMu.Lock()
+				for _, tr := range captured {
+					log.Printf("Capture: %s %s status=%d error=%s", tr.Method, tr.Host, tr.Status, tr.Error)
+				}
+				captureMu.Unlock()
+				result <- err
+				return
+			}
+			if err := verify(host, service, manager, site.URL); err != nil {
+				result <- err
+				return
+			}
+			err := verifyNetwork(host, service, proxy, site.URL, secure.URL)
+			captureMu.Lock()
+			defer captureMu.Unlock()
+			if err == nil {
+				for _, path := range []string{"/tone.wav", "/asset.js", "/post", "/resumed", "/socket"} {
+					found := false
+					for _, tr := range captured {
+						if strings.HasSuffix(tr.URL, path) && (tr.Status == 200 || path == "/socket" && tr.Status == 101) {
+							found = true
+						}
+					}
+					if !found {
+						err = fmt.Errorf("Browser request was not captured: %s; records=%+v", path, captured)
+						break
+					}
+				}
+				for _, tr := range captured {
+					if strings.HasSuffix(tr.URL, "/blocked") {
+						err = errors.New("Browser bypassed the stopped capture proxy")
+					}
+				}
+			}
+			result <- err
+		}()
 	})
 	if err = mygo.App.Run(); err != nil {
 		log.Fatal(err)
@@ -85,7 +189,127 @@ func main() {
 	if err = <-result; err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println("Native browser: media, sustained OS input, scrolling, IPC isolation and credential fill passed")
+	if os.Getenv("ACRO_BROWSER_TEST_URL") != "" {
+		fmt.Println("External browser page and capture verification passed")
+	} else {
+		fmt.Println("Native browser: media, sustained OS input, scrolling, credential fill, HTTP/HTTPS capture, cross-host assets, POST, project isolation and proxy stop/restart passed")
+	}
+}
+
+func verifyExternal(h *browserapp.Host, s *browserapp.Service, target string) error {
+	state, err := s.Open(browserapp.OpenInput{URL: target})
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pg := h.TestPage(state.SelectedID)
+	var loadErr error
+	err = wait(func() bool {
+		state = s.Status()
+		if len(state.Tabs) > 0 && state.Tabs[0].Error != "" {
+			loadErr = errors.New(state.Tabs[0].Error)
+			return true
+		}
+		value, e := pg.EvalContext(ctx, `return {url:location.href,title:document.title,ready:document.readyState,text:document.body?.innerText?.slice(0,100)}`)
+		if e == nil {
+			data, ok := value.(map[string]any)
+			if ok && data["url"] == target && data["title"] != "" && data["ready"] == "complete" {
+				log.Printf("External page loaded: %+v", data)
+				return true
+			}
+		}
+		return false
+	})
+	if loadErr != nil {
+		return loadErr
+	}
+	return err
+}
+
+func verifyNetwork(h *browserapp.Host, s *browserapp.Service, proxy *capture.Proxy, plain, secure string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	state := s.Status()
+	original := h.TestPage(state.SelectedID)
+	if _, err := original.EvalContext(ctx, `document.cookie="project=first;path=/";return true`); err != nil {
+		return err
+	}
+	state, err := s.Open(browserapp.OpenInput{URL: plain, ProjectID: "other-project"})
+	if err != nil {
+		return err
+	}
+	pg := h.TestPage(state.SelectedID)
+	if err = wait(func() bool {
+		v, e := pg.EvalContext(ctx, `return !!document.querySelector('form')`)
+		return e == nil && v == true
+	}); err != nil {
+		return err
+	}
+	isolated, err := pg.EvalContext(ctx, `return !document.cookie.includes("project=first")`)
+	if err != nil || isolated != true {
+		return errors.New("Browser project cookies are not isolated")
+	}
+	if err = s.Navigate(state.SelectedID, secure); err != nil {
+		return err
+	}
+	if err = wait(func() bool {
+		v, e := pg.EvalContext(ctx, `return document.documentElement.dataset.asset === "loaded"`)
+		return e == nil && v == true
+	}); err != nil {
+		return errors.New("HTTPS page or third-party HTTPS script failed through capture")
+	}
+	posted, err := pg.EvalContext(ctx, `return await (await fetch('/post',{method:'POST',body:'fixture-body'})).text() === 'ok'`)
+	if err != nil || posted != true {
+		return fmt.Errorf("HTTPS POST through capture failed: %v", err)
+	}
+	socket, err := pg.EvalContext(ctx, `return await new Promise(resolve=>{const ws=new WebSocket('wss://'+location.host+'/socket');window.testSocket=ws;const timer=setTimeout(()=>{ws.close();resolve(false)},5000);ws.onmessage=e=>{clearTimeout(timer);resolve(e.data==='ok')};ws.onerror=()=>{clearTimeout(timer);resolve(false)}})`)
+	if err != nil || socket != true {
+		return fmt.Errorf("Secure WebSocket through capture failed: %v", err)
+	}
+	second, err := s.Open(browserapp.OpenInput{URL: secure, ProjectID: "other-project"})
+	if err != nil {
+		return err
+	}
+	secondPage := h.TestPage(second.SelectedID)
+	if err = wait(func() bool {
+		v, e := secondPage.EvalContext(ctx, `return document.documentElement.dataset.asset === "loaded"`)
+		return e == nil && v == true
+	}); err != nil {
+		return err
+	}
+	connected, err := pg.EvalContext(ctx, `return window.testSocket.readyState === WebSocket.OPEN`)
+	if err != nil || connected != true {
+		return errors.New("Opening a tab interrupted another tab's WebSocket")
+	}
+	if _, err = s.Select(state.SelectedID); err != nil {
+		return err
+	}
+	if err = proxy.Stop(); err != nil {
+		return err
+	}
+	blocked, err := pg.EvalContext(ctx, `try { await fetch('/blocked',{cache:'no-store'}); return false } catch { return true }`)
+	if err != nil || blocked != true {
+		return errors.New("Browser bypassed capture after proxy stop")
+	}
+	// Do not mistake the previous document for a completed reload.
+	if _, err = pg.EvalContext(ctx, `delete document.documentElement.dataset.asset; return true`); err != nil {
+		return err
+	}
+	if err = s.Action(state.SelectedID, "reload"); err != nil {
+		return err
+	}
+	if err = wait(func() bool {
+		v, e := pg.EvalContext(ctx, `return document.documentElement.dataset.asset === "loaded"`)
+		return e == nil && v == true
+	}); err != nil {
+		return err
+	}
+	resumed, err := pg.EvalContext(ctx, `return await (await fetch('/resumed',{cache:'no-store'})).ok`)
+	if err != nil || resumed != true {
+		return fmt.Errorf("Browser capture did not recover after restart: %v", err)
+	}
+	return nil
 }
 
 type captureStub struct{}
