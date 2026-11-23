@@ -267,6 +267,7 @@ export function Repeater({
                 progress={responsePreview}
                 wrap={wrap}
                 numbered
+                preparing={responsePretty && !responsePreview ? t.preparingResponse : undefined}
                 matches={matches}
                 current={matches[currentIndex]}
               />

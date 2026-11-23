@@ -73,6 +73,8 @@ export function App() {
   const [history, setHistory] = useState<Entry[]>([]);
   const [context, setContext] = useState<Entry[]>([]);
   const [traffic, setTraffic] = useState<Traffic[]>([]);
+  const captureHistoryRequest = useRef<Promise<Traffic[]> | null>(null);
+  const captureHistoryLoaded = useRef(false);
   const [captureSettings, setCaptureSettings] = useState<Settings>({
     running: false,
     addr: "",
@@ -156,10 +158,21 @@ export function App() {
       .catch((error) => {
         if (!disposed) toast.error(String(error));
       });
-    void capture
-      .history()
+    return () => {
+      disposed = true;
+      stop();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (view !== "capture" || captureHistoryLoaded.current) return;
+    let disposed = false;
+    const request = (captureHistoryRequest.current ??= capture.history());
+    void request
       .then((items) => {
-        if (disposed) return;
+        if (disposed || captureHistoryRequest.current !== request) return;
+        captureHistoryRequest.current = null;
+        captureHistoryLoaded.current = true;
         setTraffic((list) => {
           const seen = new Set(list.map((item) => item.id));
           return [
@@ -172,13 +185,13 @@ export function App() {
         });
       })
       .catch((error) => {
+        if (captureHistoryRequest.current === request) captureHistoryRequest.current = null;
         if (!disposed) toast.error(String(error));
       });
     return () => {
       disposed = true;
-      stop();
     };
-  }, []);
+  }, [view]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -440,7 +453,7 @@ export function App() {
       sessionId={sessionId}
       view={view}
       counts={{
-        capture: traffic.length,
+        capture: Math.max(traffic.length, Math.min(500, captureSettings.captured)),
         history: projectHistory.length,
         context: projectContext.length,
       }}
@@ -641,6 +654,8 @@ export function App() {
                       void capture
                         .clear()
                         .then(() => {
+                          captureHistoryRequest.current = null;
+                          captureHistoryLoaded.current = true;
                           setTraffic([]);
                           setCaptureSettings((s) => ({ ...s, captured: 0 }));
                         })

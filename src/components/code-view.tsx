@@ -1,5 +1,6 @@
 import {
   memo,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -34,13 +35,13 @@ export function useCodePreview(
   pretty: boolean,
 ) {
   const key = useMemo(
-    () => previewKey({ text, mime, encoding, compression, http }),
-    [text, mime, encoding, compression, http],
+    () => (pretty ? previewKey({ text, mime, encoding, compression, http }) : undefined),
+    [text, mime, encoding, compression, http, pretty],
   );
   const [preview, setPreview] = useState<CodePreviewData>();
 
   useEffect(() => {
-    if (!pretty) {
+    if (key === undefined) {
       setPreview(undefined);
       return;
     }
@@ -60,7 +61,7 @@ export function useCodePreview(
     return () => {
       active = false;
     };
-  }, [key, text, mime, encoding, compression, http, pretty]);
+  }, [key, text, mime, encoding, compression, http]);
 
   return pretty && preview?.key === key ? preview : undefined;
 }
@@ -72,6 +73,7 @@ export function CodePreview({
   matches,
   current,
   numbered = false,
+  preparing,
 }: {
   text: string;
   progress?: CodePreviewData;
@@ -79,12 +81,14 @@ export function CodePreview({
   matches?: CodeMatch[];
   current?: CodeMatch;
   numbered?: boolean;
+  preparing?: string;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const needsDocument = numbered || text.length > chunkCharacters || !!matches?.length;
   const plainDocument = useMemo<PrettyPrepared | undefined>(
-    () => (!progress && needsDocument ? { head: "", text, language: "text" } : undefined),
-    [progress, text, needsDocument],
+    () =>
+      !progress && !preparing && needsDocument ? { head: "", text, language: "text" } : undefined,
+    [progress, text, needsDocument, preparing],
   );
   const prepared = progress?.prepared ?? plainDocument;
   return (
@@ -100,6 +104,10 @@ export function CodePreview({
           current={current}
           numbered={numbered}
         />
+      ) : preparing ? (
+        <p role="status" className="text-mini text-ink-muted">
+          {preparing}
+        </p>
       ) : (
         <pre className={cn("message-code", wrap && "whitespace-pre-wrap break-words")}>{text}</pre>
       )}
@@ -120,31 +128,34 @@ type Chunk = {
 
 function chunksFor(text: string, language: string, offset = 0, firstLine = 1): Chunk[] {
   const chunks: Chunk[] = [];
-  let batch: string[] = [];
-  let size = 0;
-  const flush = () => {
-    const chunkText = batch.join("\n");
+  let chunkStart = 0;
+  let columns: number[] = [];
+  const flush = (end: number) => {
     chunks.push({
-      text: chunkText,
-      language: size > chunkCharacters ? "text" : language,
-      offset,
+      text: text.slice(chunkStart, end),
+      language: end - chunkStart >= chunkCharacters ? "text" : language,
+      offset: offset + chunkStart,
       firstLine,
-      // Geist Mono uses one cell per ASCII character. Wrapped chunks are
-      // measured once rendered, including tabs and wider glyphs.
-      columns: batch.map((line) => line.length),
+      columns,
     });
-    offset += chunkText.length + 1;
-    firstLine += batch.length;
-    batch = [];
-    size = 0;
+    firstLine += columns.length;
+    columns = [];
   };
-  for (const line of text.split("\n")) {
-    if (batch.length && (batch.length === chunkLines || size + line.length > chunkCharacters))
-      flush();
-    batch.push(line);
-    size += line.length + 1;
+  let lineStart = 0;
+  while (true) {
+    const newline = text.indexOf("\n", lineStart);
+    const end = newline < 0 ? text.length : newline;
+    if (columns.length && (columns.length === chunkLines || end - chunkStart > chunkCharacters)) {
+      flush(lineStart - 1);
+      chunkStart = lineStart;
+    }
+    columns.push(end - lineStart);
+    if (newline < 0) {
+      flush(end);
+      break;
+    }
+    lineStart = end + 1;
   }
-  if (batch.length) flush();
   return chunks;
 }
 
@@ -166,8 +177,8 @@ function CodeDocument({
   numbered: boolean;
 }) {
   const documentRef = useRef<HTMLDivElement>(null);
-  const [active, setActive] = useState<ReadonlySet<number>>(() => new Set([0]));
-  const [width, setWidth] = useState(0);
+  const [viewport, setViewport] = useState({ width: 0, height: 360, top: 0 });
+  const [measurementVersion, setMeasurementVersion] = useState(0);
   const chunks = useMemo(() => {
     const head = normalizeCodeLines(prepared.head);
     const body = normalizeCodeLines(prepared.text);
@@ -193,42 +204,84 @@ function CodeDocument({
   const lineCount = lastChunk ? lastChunk.firstLine + lastChunk.columns.length - 1 : 1;
   const gutter = numbered ? codeGutterColumns(lineCount) : 0;
 
+  const columns =
+    wrap && viewport.width ? Math.max(1, Math.floor(viewport.width / 7.25 - gutter)) : Infinity;
+  const estimates = useMemo(
+    () =>
+      chunks.map(({ columns: lengths }) =>
+        columns === Infinity
+          ? lengths.length * 20
+          : lengths.reduce((rows, length) => rows + Math.max(1, Math.ceil(length / columns)), 0) *
+            20,
+      ),
+    [chunks, columns],
+  );
+  const measurements = useMemo(() => new Map<number, number>(), [chunks, wrap, viewport.width]);
+  const measureChunk = useCallback(
+    (index: number, height: number) => {
+      if (height <= 0 || (measurements.get(index) ?? estimates[index]) === height) return;
+      measurements.set(index, height);
+      setMeasurementVersion((version) => version + 1);
+    },
+    [estimates, measurements],
+  );
+
+  const offsets = useMemo(() => {
+    const positions = [0];
+    let y = 0;
+    estimates.forEach((height, index) => {
+      y += measurements.get(index) ?? height;
+      positions.push(y);
+    });
+    return positions;
+  }, [estimates, measurements, measurementVersion]);
+  const margin = Math.max(viewport.height * 2, 640);
+  const start = Math.min(chunks.length, chunkAt(offsets, viewport.top - margin));
+  const end = Math.min(
+    chunks.length,
+    chunkAt(offsets, viewport.top + viewport.height + margin) + 1,
+  );
+
+  const updateViewport = useCallback(() => {
+    const view = scroller.current;
+    const document = documentRef.current;
+    if (!view || !document) return;
+    const style = getComputedStyle(view);
+    const next = {
+      width: view.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight),
+      height: view.clientHeight,
+      top: view.getBoundingClientRect().top - document.getBoundingClientRect().top,
+    };
+    setViewport((previous) =>
+      previous.width === next.width && previous.height === next.height && previous.top === next.top
+        ? previous
+        : next,
+    );
+  }, [scroller]);
+
   useLayoutEffect(() => {
     const view = scroller.current;
     const document = documentRef.current;
     if (!view || !document) return;
-
-    let intersection: IntersectionObserver;
-    const observe = () => {
-      const style = getComputedStyle(view);
-      setWidth(view.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight));
-      // Start highlighting both scroll directions two viewports ahead.
-      const margin = Math.max(view.clientHeight * 2, 640);
-      intersection?.disconnect();
-      intersection = new IntersectionObserver(
-        (entries) => {
-          setActive((previous) => {
-            const next = new Set(previous);
-            for (const entry of entries) {
-              const index = Number((entry.target as HTMLElement).dataset.codeChunk);
-              if (entry.isIntersecting) next.add(index);
-              else next.delete(index);
-            }
-            return next;
-          });
-        },
-        { root: view, rootMargin: `${margin}px 0px` },
-      );
-      for (const chunk of document.children) intersection.observe(chunk);
+    let frame = 0;
+    const schedule = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        updateViewport();
+      });
     };
-    observe();
-    const resize = new ResizeObserver(observe);
+    updateViewport();
+    view.addEventListener("scroll", schedule, { passive: true });
+    const resize = new ResizeObserver(schedule);
     resize.observe(view);
+    resize.observe(document);
     return () => {
+      cancelAnimationFrame(frame);
       resize.disconnect();
-      intersection.disconnect();
+      view.removeEventListener("scroll", schedule);
     };
-  }, [chunks, scroller]);
+  }, [scroller, updateViewport]);
 
   const pendingReveal = useRef(false);
   const targetIndex = current
@@ -244,21 +297,30 @@ function CodeDocument({
   useLayoutEffect(() => {
     if (!pendingReveal.current) return;
     const view = scroller.current;
-    const block = documentRef.current?.children[targetIndex];
-    if (!view || !block) return;
+    const document = documentRef.current;
+    if (!view || !document) return;
+    const block = document.querySelector(`[data-code-chunk="${targetIndex}"]`);
+    if (!block) {
+      view.scrollTop +=
+        document.getBoundingClientRect().top -
+        view.getBoundingClientRect().top +
+        offsets[targetIndex]! -
+        view.clientHeight / 3;
+      updateViewport();
+      return;
+    }
     const mark = block.querySelector('[data-current="true"]');
-    const bounds = (mark ?? block).getBoundingClientRect();
-    const viewport = view.getBoundingClientRect();
-    if (bounds.top < viewport.top || bounds.bottom > viewport.bottom) {
-      view.scrollTop += bounds.top - viewport.top - view.clientHeight / 3;
+    if (!mark) return;
+    const bounds = mark.getBoundingClientRect();
+    const visible = view.getBoundingClientRect();
+    if (bounds.top < visible.top || bounds.bottom > visible.bottom) {
+      view.scrollTop += bounds.top - visible.top - view.clientHeight / 3;
     }
-    if (mark) {
-      if (bounds.left < viewport.left || bounds.right > viewport.right) {
-        view.scrollLeft += bounds.left - viewport.left - 12;
-      }
-      pendingReveal.current = false;
+    if (bounds.left < visible.left || bounds.right > visible.right) {
+      view.scrollLeft += bounds.left - visible.left - 12;
     }
-  }, [current, targetIndex, active, chunks, scroller]);
+    pendingReveal.current = false;
+  }, [current, targetIndex, offsets, start, end, scroller, updateViewport]);
 
   return (
     <>
@@ -282,90 +344,88 @@ function CodeDocument({
           } as CSSProperties
         }
       >
-        {chunks.map((chunk, index) => (
-          <CodeChunk
-            key={index}
-            chunk={chunk}
-            index={index}
-            active={active.has(index)}
-            width={wrap && width ? Math.max(1, width - gutter * 7.25) : 0}
-            numbered={numbered}
-            matches={active.has(index) ? matches : undefined}
-            current={index === targetIndex ? current : undefined}
-          />
-        ))}
+        <div aria-hidden="true" style={{ height: offsets[start] }} />
+        {chunks.slice(start, end).map((chunk, offset) => {
+          const index = start + offset;
+          return (
+            <CodeChunk
+              key={index}
+              chunk={chunk}
+              index={index}
+              measure={measureChunk}
+              numbered={numbered}
+              matches={matches}
+              current={index === targetIndex ? current : undefined}
+            />
+          );
+        })}
+        <div aria-hidden="true" style={{ height: offsets[chunks.length]! - offsets[end]! }} />
       </div>
     </>
   );
 }
 
+// Locate the first chunk whose bottom is beyond the given scroll offset.
+function chunkAt(offsets: number[], top: number) {
+  let low = 0;
+  let high = offsets.length - 1;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (offsets[middle + 1]! <= top) low = middle + 1;
+    else high = middle;
+  }
+  return low;
+}
+
 const CodeChunk = memo(function CodeChunk({
   chunk,
   index,
-  active,
-  width,
+  measure,
   matches,
   current,
   numbered,
 }: {
   chunk: Chunk;
   index: number;
-  active: boolean;
-  width: number;
+  measure: (index: number, height: number) => void;
   matches?: CodeMatch[];
   current?: CodeMatch;
   numbered: boolean;
 }) {
   const element = useRef<HTMLDivElement>(null);
   const [html, setHtml] = useState<string>();
-  const measured = useRef<{ width: number; height: number } | undefined>(undefined);
-  const columns = width ? Math.max(1, Math.floor(width / 7.25)) : Infinity;
-  const estimatedHeight =
-    20 * chunk.columns.reduce((rows, line) => rows + Math.max(1, Math.ceil(line / columns)), 0);
-  // An empty block preserves the scroll position after its code nodes unmount.
-  const height = measured.current?.width === width ? measured.current.height : estimatedHeight;
 
   useLayoutEffect(() => {
     const block = element.current;
-    if (!block || !active) return;
-    const measure = () => {
-      measured.current = { width, height: block.getBoundingClientRect().height };
-    };
-    measure();
-    const resize = new ResizeObserver(measure);
+    if (!block) return;
+    const resize = new ResizeObserver(() => measure(index, block.getBoundingClientRect().height));
     resize.observe(block);
     return () => resize.disconnect();
-  }, [active, width]);
+  }, [index, measure]);
 
   useEffect(() => {
-    if (!active || chunk.language === "text" || !chunk.text) {
+    if (chunk.language === "text" || !chunk.text) {
       setHtml(undefined);
       return;
     }
     return subscribeHighlight(chunk.text, chunk.language, setHtml);
-  }, [active, chunk]);
+  }, [chunk]);
 
   const markup = useMemo(() => {
-    if (!active) return;
     const source = numbered ? numberedCodeHtml(chunk, html) : html;
     return matches?.length ? markCode(source, chunk.text, chunk.offset, matches, current) : source;
-  }, [active, chunk, html, matches, current, numbered]);
+  }, [chunk, html, matches, current, numbered]);
 
   return (
-    <div
-      ref={element}
-      data-code-chunk={index}
-      style={active ? { minHeight: chunk.columns.length * 20 } : { height }}
-    >
-      {active &&
-        (markup ? (
-          // Both Shiki and the plain renderer escape the source text.
-          <div dangerouslySetInnerHTML={{ __html: markup }} />
-        ) : (
-          <pre>
-            <code>{chunk.text}</code>
-          </pre>
-        ))}
+    <div ref={element} data-code-chunk={index} style={{ minHeight: chunk.columns.length * 20 }}>
+      {markup ? (
+        // Both Shiki and the plain renderer escape the source text.
+        <div dangerouslySetInnerHTML={{ __html: markup }} />
+      ) : (
+        <pre>
+          <code>{chunk.text}</code>
+        </pre>
+      )}
     </div>
   );
 });

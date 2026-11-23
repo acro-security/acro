@@ -10,6 +10,11 @@ test("prefetches nearby chunks, releases distant ones and copies the full respon
     (_, i) => `export const value${i} = { id: ${i}, label: "item ${i}" };`,
   ).join("\n");
   expect(lines.length).toBeGreaterThan(128 * 1024);
+  let historyReads = 0;
+  await page.route("**/api/capture/history", (route) => {
+    historyReads++;
+    return route.continue();
+  });
 
   await page.route("**/api/replay", async (route) => {
     await route.fulfill({
@@ -31,6 +36,8 @@ test("prefetches nearby chunks, releases distant ones and copies the full respon
   });
 
   await page.goto("/");
+  await expect.poll(() => historyReads).toBeGreaterThan(0);
+  const readsBeforeReload = historyReads;
   await page.evaluate(() =>
     localStorage.setItem(
       "acro.workspace.v1",
@@ -65,6 +72,8 @@ test("prefetches nearby chunks, releases distant ones and copies the full respon
   const preview = pane.locator(".syntax-preview");
   const highlighted = preview.locator(".shiki");
   await expect(highlighted.first()).toContainText("value0", { timeout: 60000 });
+  expect(historyReads).toBe(readsBeforeReload);
+  expect(await preview.locator("[data-code-chunk]").count()).toBeLessThan(10);
   await expect(preview.locator('[data-line-number="1"]')).toContainText("value0");
 
   // The following chunk is highlighted while the viewport is still at the top.
@@ -113,4 +122,6 @@ test("prefetches nearby chunks, releases distant ones and copies the full respon
   await find.press("Escape");
   await expect(find).toHaveCount(0);
   await expect(active).toHaveCount(0);
+  await page.getByRole("button", { name: "Intercept", exact: true }).click();
+  await expect.poll(() => historyReads).toBe(readsBeforeReload + 1);
 });
