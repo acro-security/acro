@@ -16,8 +16,8 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { CodePreview, CodeView, useCodePreview } from "@/components/code-view";
+import { CodeEditor } from "@/components/code-editor";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Panel, PanelHeader, StatusDot, toneClass } from "@/components/surface";
 import {
@@ -164,15 +164,9 @@ export function Repeater({
             <span className="proto ml-auto text-ink-faint">HTTP/1.1</span>
           </div>
           {requestPretty ? (
-            <CodeView text={draft.raw} http />
+            <CodeView text={draft.raw} http numbered />
           ) : (
-            <Textarea
-              value={draft.raw}
-              onChange={(e) => onChange({ raw: e.target.value })}
-              spellCheck={false}
-              aria-label={t.request}
-              className="min-h-0 flex-1 resize-none rounded-none border-0 bg-transparent p-3 message-code text-ink shadow-none focus-visible:ring-0 dark:bg-transparent"
-            />
+            <CodeEditor value={draft.raw} onChange={(raw) => onChange({ raw })} label={t.request} />
           )}
         </Panel>
 
@@ -272,6 +266,7 @@ export function Repeater({
                 text={text}
                 progress={responsePreview}
                 wrap={wrap}
+                numbered
                 matches={matches}
                 current={matches[currentIndex]}
               />

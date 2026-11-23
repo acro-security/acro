@@ -65,6 +65,7 @@ test("prefetches nearby chunks, releases distant ones and copies the full respon
   const preview = pane.locator(".syntax-preview");
   const highlighted = preview.locator(".shiki");
   await expect(highlighted.first()).toContainText("value0", { timeout: 60000 });
+  await expect(preview.locator('[data-line-number="1"]')).toContainText("value0");
 
   // The following chunk is highlighted while the viewport is still at the top.
   const nextChunk = preview.locator('[data-code-chunk="1"] .shiki');
@@ -83,6 +84,7 @@ test("prefetches nearby chunks, releases distant ones and copies the full respon
     el.scrollTop = el.scrollHeight;
   });
   await expect(highlighted.last()).toContainText("value5999");
+  await expect(preview.locator('[data-line-number="6000"]')).toContainText("value5999");
   await expect(preview.locator('[data-code-chunk="0"] pre')).toHaveCount(0);
   expect(await highlighted.count()).toBeLessThan(10);
 

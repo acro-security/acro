@@ -89,9 +89,29 @@ test("capture IDs, Escape, replay popup, formatting and equal editor fonts", asy
   const requestPretty = page.getByRole("checkbox", { name: "Pretty", exact: true }).first();
   await expect(requestPretty).toBeChecked();
   await expect(page.locator(".syntax-preview").first()).toContainText("GET /echo");
+  await expect(page.locator('.syntax-preview [data-line-number="1"]')).toContainText("GET /echo");
   await requestPretty.uncheck();
   const request = page.getByRole("textbox", { name: "Request", exact: true });
   const raw = await request.inputValue();
+  const editorGutter = page.locator('[aria-hidden="true"] > .code-numbered');
+  const headers = Array.from({ length: 35 }, (_, index) => `X-Row-${index}: value`);
+  await request.fill([`X-Long: ${"wrap ".repeat(150)}`, ...headers, ""].join("\n"));
+  await expect(editorGutter.locator("[data-line-number]")).toHaveCount(37);
+  expect(
+    (await editorGutter.locator('[data-line-number="1"]').boundingBox())!.height,
+  ).toBeGreaterThan(20);
+  await request.evaluate((el) => {
+    el.scrollTop = el.scrollHeight;
+  });
+  await expect
+    .poll(() =>
+      request.evaluate((el) => {
+        const gutter = el.parentElement!.querySelector('[aria-hidden="true"]')!;
+        return { aligned: el.scrollTop === gutter.scrollTop, scrolled: el.scrollTop > 0 };
+      }),
+    )
+    .toEqual({ aligned: true, scrolled: true });
+  await request.fill(raw);
   const top = (await request.boundingBox())!.y;
   await page.getByRole("button", { name: "Request options", exact: true }).click();
   await expect(page.getByLabel("Timeout", { exact: true })).toBeVisible();

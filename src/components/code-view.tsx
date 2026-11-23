@@ -1,4 +1,12 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import type { PrettyInput, PrettyPrepared } from "@/lib/pretty";
 import { cachedPreview, loadPreview, subscribeHighlight } from "@/lib/preview-client";
 import { previewKey } from "@/lib/preview-cache";
@@ -14,10 +22,11 @@ type CodePreviewData = {
 export function CodeView({
   pretty = true,
   wrap,
+  numbered,
   ...input
-}: PrettyInput & { pretty?: boolean; wrap?: boolean }) {
+}: PrettyInput & { pretty?: boolean; wrap?: boolean; numbered?: boolean }) {
   const progress = useCodePreview(input, pretty);
-  return <CodePreview text={input.text} progress={progress} wrap={wrap} />;
+  return <CodePreview text={input.text} progress={progress} wrap={wrap} numbered={numbered} />;
 }
 
 export function useCodePreview(
@@ -62,20 +71,20 @@ export function CodePreview({
   wrap = true,
   matches,
   current,
+  numbered = false,
 }: {
   text: string;
   progress?: CodePreviewData;
   wrap?: boolean;
   matches?: CodeMatch[];
   current?: CodeMatch;
+  numbered?: boolean;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
+  const needsDocument = numbered || text.length > chunkCharacters || !!matches?.length;
   const plainDocument = useMemo<PrettyPrepared | undefined>(
-    () =>
-      !progress && (text.length > chunkCharacters || matches?.length)
-        ? { head: "", text, language: "text" }
-        : undefined,
-    [progress, text, !!matches?.length],
+    () => (!progress && needsDocument ? { head: "", text, language: "text" } : undefined),
+    [progress, text, needsDocument],
   );
   const prepared = progress?.prepared ?? plainDocument;
   return (
@@ -89,6 +98,7 @@ export function CodePreview({
           wrap={wrap}
           matches={matches}
           current={current}
+          numbered={numbered}
         />
       ) : (
         <pre className={cn("message-code", wrap && "whitespace-pre-wrap break-words")}>{text}</pre>
@@ -100,10 +110,15 @@ export function CodePreview({
 const chunkLines = 32;
 const chunkCharacters = 8 * 1024;
 
-type Chunk = { text: string; language: string; columns: number[]; offset: number };
+type Chunk = {
+  text: string;
+  language: string;
+  columns: number[];
+  offset: number;
+  firstLine: number;
+};
 
-function chunksFor(text: string, language: string, offset = 0): Chunk[] {
-  if (!text) return [];
+function chunksFor(text: string, language: string, offset = 0, firstLine = 1): Chunk[] {
   const chunks: Chunk[] = [];
   let batch: string[] = [];
   let size = 0;
@@ -113,11 +128,13 @@ function chunksFor(text: string, language: string, offset = 0): Chunk[] {
       text: chunkText,
       language: size > chunkCharacters ? "text" : language,
       offset,
+      firstLine,
       // Geist Mono uses one cell per ASCII character. Wrapped chunks are
       // measured once rendered, including tabs and wider glyphs.
       columns: batch.map((line) => line.length),
     });
     offset += chunkText.length + 1;
+    firstLine += batch.length;
     batch = [];
     size = 0;
   };
@@ -138,6 +155,7 @@ function CodeDocument({
   wrap,
   matches,
   current,
+  numbered,
 }: {
   prepared: PrettyPrepared;
   formatted: boolean;
@@ -145,25 +163,35 @@ function CodeDocument({
   wrap: boolean;
   matches?: CodeMatch[];
   current?: CodeMatch;
+  numbered: boolean;
 }) {
   const documentRef = useRef<HTMLDivElement>(null);
   const [active, setActive] = useState<ReadonlySet<number>>(() => new Set([0]));
   const [width, setWidth] = useState(0);
   const chunks = useMemo(() => {
     const head = normalizeCodeLines(prepared.head);
+    const body = normalizeCodeLines(prepared.text);
+    const header = head ? chunksFor(head + (body ? "\n" : numbered ? "\n\n" : ""), "http") : [];
+    const last = header.at(-1);
     return [
-      ...chunksFor(head && prepared.text ? head + "\n" : head, "http"),
-      ...chunksFor(
-        normalizeCodeLines(prepared.text),
-        prepared.language,
-        head ? head.length + 2 : 0,
-      ),
+      ...header,
+      ...(body || (numbered && !head)
+        ? chunksFor(
+            body,
+            prepared.language,
+            head ? head.length + 2 : 0,
+            last ? last.firstLine + last.columns.length : 1,
+          )
+        : []),
     ];
-  }, [prepared]);
+  }, [prepared, numbered]);
   const longestLine = useMemo(
     () => chunks.reduce((longest, chunk) => Math.max(longest, ...chunk.columns), 0),
     [chunks],
   );
+  const lastChunk = chunks.at(-1);
+  const lineCount = lastChunk ? lastChunk.firstLine + lastChunk.columns.length - 1 : 1;
+  const gutter = numbered ? codeGutterColumns(lineCount) : 0;
 
   useLayoutEffect(() => {
     const view = scroller.current;
@@ -245,8 +273,14 @@ function CodeDocument({
           "message-code code-document",
           formatted && "syntax-preview",
           wrap && "code-wrap",
+          numbered && "code-numbered",
         )}
-        style={wrap ? undefined : { minWidth: `${longestLine}ch` }}
+        style={
+          {
+            "--code-gutter": `${gutter}ch`,
+            minWidth: wrap ? undefined : `${longestLine + gutter}ch`,
+          } as CSSProperties
+        }
       >
         {chunks.map((chunk, index) => (
           <CodeChunk
@@ -254,7 +288,8 @@ function CodeDocument({
             chunk={chunk}
             index={index}
             active={active.has(index)}
-            width={wrap ? width : 0}
+            width={wrap && width ? Math.max(1, width - gutter * 7.25) : 0}
+            numbered={numbered}
             matches={active.has(index) ? matches : undefined}
             current={index === targetIndex ? current : undefined}
           />
@@ -271,6 +306,7 @@ const CodeChunk = memo(function CodeChunk({
   width,
   matches,
   current,
+  numbered,
 }: {
   chunk: Chunk;
   index: number;
@@ -278,6 +314,7 @@ const CodeChunk = memo(function CodeChunk({
   width: number;
   matches?: CodeMatch[];
   current?: CodeMatch;
+  numbered: boolean;
 }) {
   const element = useRef<HTMLDivElement>(null);
   const [html, setHtml] = useState<string>();
@@ -308,10 +345,11 @@ const CodeChunk = memo(function CodeChunk({
     return subscribeHighlight(chunk.text, chunk.language, setHtml);
   }, [active, chunk]);
 
-  const markup = useMemo(
-    () => (matches?.length ? markCode(html, chunk.text, chunk.offset, matches, current) : html),
-    [chunk, html, matches, current],
-  );
+  const markup = useMemo(() => {
+    if (!active) return;
+    const source = numbered ? numberedCodeHtml(chunk, html) : html;
+    return matches?.length ? markCode(source, chunk.text, chunk.offset, matches, current) : source;
+  }, [active, chunk, html, matches, current, numbered]);
 
   return (
     <div
@@ -321,7 +359,7 @@ const CodeChunk = memo(function CodeChunk({
     >
       {active &&
         (markup ? (
-          // The worker returns Shiki's escaped markup.
+          // Both Shiki and the plain renderer escape the source text.
           <div dangerouslySetInnerHTML={{ __html: markup }} />
         ) : (
           <pre>
@@ -331,3 +369,18 @@ const CodeChunk = memo(function CodeChunk({
     </div>
   );
 });
+
+export function codeGutterColumns(lineCount: number) {
+  return Math.max(4, String(lineCount).length + 2);
+}
+
+function numberedCodeHtml(chunk: Chunk, html?: string) {
+  let lineNumber = chunk.firstLine;
+  const lineTag = () => `<span class="line" data-line-number="${lineNumber++}">`;
+  if (html) return html.replaceAll('<span class="line">', lineTag);
+
+  const escape = (line: string) =>
+    line.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+  const lines = chunk.text.split("\n").map((line) => lineTag() + escape(line) + "</span>");
+  return `<pre><code>${lines.join("\n")}</code></pre>`;
+}
