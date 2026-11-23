@@ -45,10 +45,13 @@ func main() {
 			Height:  940,
 			// The rail and the request/response split need room; below this the
 			// layout stacks instead.
-			MinWidth:        820,
-			MinHeight:       560,
-			StateKey:        "main",
-			BackgroundColor: "light-dark(#fbfbfc, #0b0c0d)",
+			TitleBarStyle:     mygo.TitleBarHidden,
+			TitleBarHeight:    36,
+			HideWindowButtons: true,
+			MinWidth:          820,
+			MinHeight:         560,
+			StateKey:          "main",
+			BackgroundColor:   "light-dark(#fbfbfc, #0e0c10)",
 		})
 		if err := host.Attach(win); err != nil {
 			log.Fatal(err)

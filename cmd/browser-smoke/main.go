@@ -108,7 +108,7 @@ func main() {
 	defer secure.Close()
 	data, _ := json.Marshal(map[string]any{"id": "11111111-2222-4333-8444-555555555555", "type": 1, "name": "Fixture account", "login": map[string]any{"username": "fixture-user", "password": "fixture-secret", "uris": []map[string]string{{"uri": site.URL}}}})
 	token := base64.StdEncoding.EncodeToString([]byte("01234567890123456789012345678901"))
-	script := "#!/bin/sh\ncase \"$1\" in\nstatus) if [ -n \"$BW_SESSION\" ]; then echo '{\"status\":\"unlocked\",\"serverUrl\":\"http://localhost\"}'; else echo '{\"status\":\"locked\",\"serverUrl\":\"http://localhost\"}'; fi;;\nunlock) echo " + token + ";;\nlist) cat <<'FIXTURE'\n[" + string(data) + "]\nFIXTURE\n;;\nget) cat <<'FIXTURE'\n" + string(data) + "\nFIXTURE\n;;\n*) exit 1;;\nesac\n"
+	script := "#!/bin/sh\ncase \"$1\" in\nstatus) if [ -n \"$BW_SESSION\" ]; then echo '{\"status\":\"unlocked\",\"serverUrl\":\"http://localhost\"}'; else echo '{\"status\":\"locked\",\"serverUrl\":\"http://localhost\"}'; fi;;\nunlock) echo " + token + ";;\nsync) echo '{}';;\nlist) cat <<'FIXTURE'\n[" + string(data) + "]\nFIXTURE\n;;\nget) cat <<'FIXTURE'\n" + string(data) + "\nFIXTURE\n;;\n*) exit 1;;\nesac\n"
 	if err = os.WriteFile(filepath.Join(dir, "bw"), []byte(script), 0700); err != nil {
 		log.Fatal(err)
 	}
@@ -136,7 +136,10 @@ func main() {
 	mygo.BindAs("Capture", &captureStub{})
 	result := make(chan error, 1)
 	mygo.App.WhenReady(func() {
-		w := mygo.NewWindow(mygo.WindowOptions{Title: "Acro smoke", Width: 1280, Height: 900, Content: ui.View(host.View)})
+		w := mygo.NewWindow(mygo.WindowOptions{
+			Title: "Acro smoke", Width: 1280, Height: 900, Content: ui.View(host.View),
+			TitleBarStyle: mygo.TitleBarHidden, TitleBarHeight: 36, HideWindowButtons: true,
+		})
 		if err := host.Attach(w); err != nil {
 			result <- err
 			mygo.App.Quit()

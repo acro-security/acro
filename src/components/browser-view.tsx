@@ -3,6 +3,8 @@ import {
   ArrowLeft,
   ArrowRight,
   Globe,
+  Eye,
+  EyeOff,
   KeyRound,
   LockKeyhole,
   Plus,
@@ -27,6 +29,12 @@ import {
 import type { Dictionary } from "@/i18n";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupInput,
+  InputGroupButton,
+} from "@/components/ui/input-group";
 import { Field, FieldGroup, FieldLabel, FieldDescription } from "@/components/ui/field";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -52,31 +60,42 @@ export function BrowserView({
   projectId,
   t,
   suspended,
+  showVault,
 }: {
   projectId: string;
   t: Dictionary;
   suspended: boolean;
+  showVault: boolean;
 }) {
   const [state, setState] = useState<BrowserState>({ tabs: [], selectedId: "" });
   const [address, setAddress] = useState("");
+  const [revealPassword, setRevealPassword] = useState(false);
   const [newTab, setNewTab] = useState(false);
-  const [showVault, setShowVault] = useState(true);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<VaultStatus>(locked);
-  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [accountResult, setAccountResult] = useState<{ scope: string; items: Account[] }>({
+    scope: "",
+    items: [],
+  });
+  const [accountsRevision, setAccountsRevision] = useState(0);
   const [login, setLogin] = useState({
     email: "",
     password: "",
     code: "",
-    server: "http://localhost:8222",
+    server: "https://vault.bitwarden.com",
   });
   const [editing, setEditing] = useState<SaveInput | null>(null);
   const [deleting, setDeleting] = useState<Account | null>(null);
   const slot = useRef<HTMLDivElement>(null);
   const addressInput = useRef<HTMLInputElement>(null);
+  const actionPending = useRef(false);
+  const vaultMutation = useRef(false);
+  const vaultVersion = useRef(0);
   const tabs = state.tabs.filter((tab) => tab.projectId === projectId);
   const tab = tabs.find((tab) => tab.id === state.selectedId) ?? tabs[0];
   const unlocked = status.state === "unlocked";
+  const accountScope = JSON.stringify([status.server, status.email, tab?.id, tab?.url]);
+  const accounts = unlocked && accountResult.scope === accountScope ? accountResult.items : [];
   useBrowserViewport(
     slot,
     newTab ? undefined : tab?.id,
@@ -86,14 +105,24 @@ export function BrowserView({
   function failure(error: unknown) {
     toast.error(error instanceof Error ? error.message : String(error));
   }
-  async function action(task: () => Promise<unknown>) {
-    if (busy) return;
+  async function action(task: () => Promise<unknown>, changesVault = false) {
+    if (actionPending.current) return;
+    actionPending.current = true;
+    if (changesVault) {
+      vaultMutation.current = true;
+      vaultVersion.current++;
+    }
     setBusy(true);
     try {
       await task();
     } catch (error) {
       failure(error);
     } finally {
+      if (changesVault) {
+        vaultVersion.current++;
+        vaultMutation.current = false;
+      }
+      actionPending.current = false;
       setBusy(false);
     }
   }
@@ -123,9 +152,11 @@ export function BrowserView({
       })
       .catch(failure);
     async function pollVault(initial: boolean) {
+      const version = vaultVersion.current;
       try {
+        if (vaultMutation.current) return;
         const next = await Vault.status.with({ signal: controller.signal })();
-        if (!disposed) {
+        if (!disposed && !vaultMutation.current && version === vaultVersion.current) {
           setStatus(next);
           if (initial)
             setLogin((v) => ({
@@ -156,20 +187,39 @@ export function BrowserView({
       void Browser.select(tab.id).then(setState).catch(failure);
   }, [tab?.id, tab?.url]);
   useEffect(() => {
+    if (!native || !unlocked) return;
+    const controller = new AbortController();
+    // CLI unlock can use an old offline snapshot; refresh changes from other clients.
+    void Vault.sync
+      .with({ signal: controller.signal })()
+      .then(() => {
+        if (!controller.signal.aborted) setAccountsRevision((v) => v + 1);
+      })
+      .catch((error) => {
+        if (!controller.signal.aborted) failure(error);
+      });
+    return () => controller.abort();
+  }, [unlocked]);
+  useEffect(() => {
     let disposed = false;
-    setAccounts([]);
+    const controller = new AbortController();
+    if (!unlocked) setAccountResult({ scope: "", items: [] });
     if (native && unlocked && tab?.url)
-      void Vault.accounts(tab.url)
+      void Vault.accounts
+        .with({ signal: controller.signal })(tab.url)
         .then((items) => {
-          if (!disposed) setAccounts(items);
+          if (!disposed) setAccountResult({ scope: accountScope, items });
         })
-        .catch(failure);
+        .catch((error) => {
+          if (!disposed) failure(error);
+        });
     return () => {
       disposed = true;
+      controller.abort();
     };
-  }, [unlocked, tab?.id, tab?.url]);
-  async function reloadAccounts() {
-    if (tab) setAccounts(await Vault.accounts(tab.url));
+  }, [unlocked, accountScope, accountsRevision]);
+  function reloadAccounts() {
+    setAccountsRevision((v) => v + 1);
   }
   function navigate() {
     let url = address.trim();
@@ -184,35 +234,28 @@ export function BrowserView({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
-      <div className="flex min-h-8 shrink-0 items-center gap-2">
-        <h2 className="text-title font-semibold">{t.browser}</h2>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          className="ml-auto"
-          aria-label={t.credentials}
-          aria-pressed={showVault}
-          onClick={() => setShowVault(!showVault)}
-        >
-          <KeyRound />
-        </Button>
-      </div>
-      <div className="flex min-h-0 flex-1 flex-col gap-3 lg:flex-row">
+      <div className="flex min-h-0 flex-1 flex-col gap-3.5 md:flex-row">
         {/* The page takes the larger share when stacked, and all of it side by
             side: the guest WebView is the reason this view exists. */}
-        <Panel className="min-h-0 flex-[2] lg:flex-1">
-          <div className="flex h-8 shrink-0 items-center border-b">
+        <Panel className="min-h-0 flex-[2] md:flex-1">
+          <div className="flex h-[42px] shrink-0 items-center gap-2 border-b bg-strip px-2">
             <Tabs
               value={newTab ? "" : (tab?.id ?? "")}
               onValueChange={(id) => {
                 setNewTab(false);
                 void action(async () => setState(await Browser.select(id)));
               }}
-              className="min-w-0 flex-1 overflow-x-auto"
+              className="min-w-0 overflow-x-auto"
             >
               <TabsList variant="editor" aria-label={t.browserTabs}>
+                {(!tab || newTab) && (
+                  <div className="flex h-7 w-44 shrink-0 items-center gap-2 rounded-sm bg-sidebar-accent px-2 text-xs">
+                    <Globe className="size-3.5" />
+                    {t.newBrowserTab}
+                  </div>
+                )}
                 {tabs.map((item) => (
-                  <div key={item.id} className="relative flex shrink-0 border-r">
+                  <div key={item.id} className="relative flex shrink-0">
                     <TabsTrigger value={item.id} className="max-w-52 pr-8">
                       <Globe />
                       <span className="truncate">{item.title || item.url}</span>
@@ -247,7 +290,7 @@ export function BrowserView({
             </Button>
           </div>
           <form
-            className="flex shrink-0 items-center gap-1 border-b p-2"
+            className="flex shrink-0 items-center gap-1 border-b bg-strip px-2.5 py-1"
             onSubmit={(event) => {
               event.preventDefault();
               navigate();
@@ -293,17 +336,15 @@ export function BrowserView({
               placeholder="https://"
               autoComplete="off"
               spellCheck={false}
-              className="min-w-0 flex-1"
+              disabled={!native}
+              className="h-[30px] min-w-0 flex-1 rounded-xl bg-field px-3 font-mono text-xs"
             />
-            <Button type="submit" size="sm" disabled={!native || !address.trim() || busy}>
-              {t.go}
-            </Button>
           </form>
           <div ref={slot} data-testid="browser-viewport" className="relative min-h-0 flex-1">
             {!native || !tab || newTab ? (
               <Empty className="h-full border-0">
                 <EmptyHeader>
-                  <Globe className="mx-auto text-muted-foreground" />
+                  <Globe className="mx-auto mb-1 size-8 text-muted-foreground" />
                   <EmptyTitle>{t.openWebsite}</EmptyTitle>
                   <EmptyDescription>
                     {native
@@ -323,7 +364,7 @@ export function BrowserView({
           // Stacked under the page on narrow windows, the panel shares the
           // height with the page's instead of taking a fixed slice of it:
           // the guest WebView needs the room, and this panel scrolls itself.
-          <Panel className="min-h-0 flex-1 lg:flex-none lg:w-80">
+          <Panel className="min-h-0 flex-1 bg-vault md:w-[270px] md:flex-none xl:w-[300px]">
             <PanelHeader title={t.credentials}>
               <span className="text-xs text-muted-foreground">Bitwarden</span>
               {unlocked && (
@@ -335,16 +376,16 @@ export function BrowserView({
                   onClick={() =>
                     void action(async () => {
                       await Vault.lock();
-                      setAccounts([]);
+                      setAccountResult({ scope: "", items: [] });
                       await refreshVault();
-                    })
+                    }, true)
                   }
                 >
                   <LockKeyhole />
                 </Button>
               )}
             </PanelHeader>
-            <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto p-4">
+            <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto p-5">
               {!native ? (
                 <p className="text-sm text-muted-foreground">Bitwarden requires the desktop app</p>
               ) : !status.available ? (
@@ -369,18 +410,37 @@ export function BrowserView({
                     e.preventDefault();
                     const input = { ...login };
                     setLogin((v) => ({ ...v, password: "", code: "" }));
+                    setRevealPassword(false);
                     void action(async () => {
                       setStatus(await Vault.unlock(input));
                       input.password = "";
                       input.code = "";
-                    });
+                    }, true);
                   }}
                 >
                   <FieldGroup>
-                    <p className="flex items-center gap-2 text-sm">
-                      <LockKeyhole />
-                      {t.vaultLocked}
-                    </p>
+                    <div className="flex flex-col items-center gap-2 py-1 text-center">
+                      {status.state === "unauthenticated" ? (
+                        <ShieldCheck className="size-8 text-muted-foreground" />
+                      ) : (
+                        <LockKeyhole className="size-8 text-muted-foreground" />
+                      )}
+                      <h2 className="text-xl font-semibold">
+                        {status.state === "unauthenticated" ? t.signInBitwarden : t.unlockVault}
+                      </h2>
+                      {status.state !== "unauthenticated" && (
+                        <p className="text-xs text-muted-foreground">{t.unlockVaultHint}</p>
+                      )}
+                    </div>
+                    {status.state !== "unauthenticated" && (
+                      <div className="flex min-w-0 items-center gap-2 rounded-md border px-3 py-2">
+                        <KeyRound className="size-4 shrink-0 text-muted-foreground" />
+                        <div className="min-w-0">
+                          <p className="truncate font-medium">{status.email}</p>
+                          <p className="truncate text-xs text-muted-foreground">{status.server}</p>
+                        </div>
+                      </div>
+                    )}
                     {status.state === "unauthenticated" && (
                       <>
                         <Field>
@@ -398,6 +458,7 @@ export function BrowserView({
                             id="vault-email"
                             type="email"
                             autoComplete="username"
+                            placeholder="you@example.com"
                             value={login.email}
                             onChange={(e) => setLogin({ ...login, email: e.target.value })}
                             required
@@ -407,14 +468,28 @@ export function BrowserView({
                     )}
                     <Field>
                       <FieldLabel htmlFor="vault-password">{t.masterPassword}</FieldLabel>
-                      <Input
-                        id="vault-password"
-                        type="password"
-                        autoComplete="off"
-                        value={login.password}
-                        onChange={(e) => setLogin({ ...login, password: e.target.value })}
-                        required
-                      />
+                      <InputGroup className="h-9 bg-field">
+                        <InputGroupInput
+                          id="vault-password"
+                          type={revealPassword ? "text" : "password"}
+                          autoComplete={revealPassword ? "off" : "current-password"}
+                          placeholder={t.masterPassword}
+                          value={login.password}
+                          onChange={(e) => setLogin({ ...login, password: e.target.value })}
+                          required
+                        />
+                        <InputGroupAddon align="inline-end">
+                          <InputGroupButton
+                            variant="quiet-icon"
+                            size="icon-xs"
+                            aria-label={t.showPassword}
+                            aria-pressed={revealPassword}
+                            onClick={() => setRevealPassword((v) => !v)}
+                          >
+                            {revealPassword ? <EyeOff /> : <Eye />}
+                          </InputGroupButton>
+                        </InputGroupAddon>
+                      </InputGroup>
                     </Field>
                     {status.state === "unauthenticated" && (
                       <Field>
@@ -428,8 +503,12 @@ export function BrowserView({
                         <FieldDescription>{t.optional}</FieldDescription>
                       </Field>
                     )}
-                    <Button type="submit" disabled={busy}>
-                      {busy ? t.connecting : t.unlockVault}
+                    <Button type="submit" size="lg" disabled={busy}>
+                      {busy
+                        ? t.connecting
+                        : status.state === "unauthenticated"
+                          ? t.signIn
+                          : t.unlockVault}
                     </Button>
                     {status.state !== "unauthenticated" && (
                       <Button
@@ -440,7 +519,7 @@ export function BrowserView({
                           void action(async () => {
                             await Vault.logout();
                             await refreshVault();
-                          })
+                          }, true)
                         }
                       >
                         {t.disconnect}
@@ -452,7 +531,12 @@ export function BrowserView({
                 <>
                   <div className="flex items-center gap-2 text-xs text-muted-foreground">
                     <ShieldCheck />
-                    <span className="truncate">{status.email || status.server}</span>
+                    <div className="min-w-0">
+                      <p className="truncate font-medium text-ink">
+                        {status.email || status.server}
+                      </p>
+                      <p className="truncate text-xs text-muted-foreground">{status.server}</p>
+                    </div>
                   </div>
                   <div className="flex gap-2">
                     <Button
@@ -481,9 +565,12 @@ export function BrowserView({
                       <RefreshCw />
                     </Button>
                   </div>
-                  <p className="break-all text-xs text-muted-foreground">
-                    {tab ? safeOrigin(tab.url) : t.openWebsite}
-                  </p>
+                  <div className="flex flex-wrap items-center justify-between gap-1 border-t pt-3 text-xs">
+                    <strong>{t.siteLogins}</strong>
+                    <span className="min-w-0 break-all text-muted-foreground">
+                      {tab ? safeOrigin(tab.url) : t.openWebsite}
+                    </span>
+                  </div>
                   {accounts.length === 0 ? (
                     <p className="text-sm text-muted-foreground">
                       {tab ? t.noAccounts : t.browserEmpty}
@@ -551,9 +638,9 @@ export function BrowserView({
                     onClick={() =>
                       void action(async () => {
                         await Vault.logout();
-                        setAccounts([]);
+                        setAccountResult({ scope: "", items: [] });
                         await refreshVault();
-                      })
+                      }, true)
                     }
                   >
                     {t.disconnect}

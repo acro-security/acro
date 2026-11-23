@@ -30,8 +30,8 @@ export function PanelHeader({
   children?: ReactNode;
 }) {
   return (
-    <header className="flex h-9 shrink-0 items-center gap-2 border-b border-hairline px-3">
-      <h2 className="text-mini font-medium text-ink">{title}</h2>
+    <header className="flex h-[42px] shrink-0 items-center gap-2 border-b border-hairline bg-strip px-3">
+      <h2 className="text-title font-semibold text-ink">{title}</h2>
       {meta ? <div className="min-w-0 flex-1 truncate">{meta}</div> : <div className="flex-1" />}
       {children ? <div className="flex shrink-0 items-center gap-0.5">{children}</div> : null}
     </header>

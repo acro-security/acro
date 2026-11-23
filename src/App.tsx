@@ -1,13 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import {
   ArrowDownToLine,
-  ChevronRight,
   FolderClock,
-  FolderOpen,
   Layers,
   Monitor,
   Moon,
-  PanelLeft,
+  PanelLeftOpen,
+  PanelLeftClose,
+  PanelRight,
+  Minus,
+  Square,
+  X,
   Languages,
   Search,
   Sun,
@@ -39,7 +42,9 @@ import { SessionView } from "@/components/session-view";
 import { capture, type Settings, type Traffic } from "@/capture";
 import { StatusDot, toneClass } from "@/components/surface";
 import { dictionaries, locales, type Locale } from "@/i18n";
-import { send } from "@/api";
+import { native, send } from "@/api";
+import { currentWindow } from "mygo-runtime";
+import wordmark from "@/assets/acro-wordmark.dark.svg";
 import {
   freshWorkspace,
   loadWorkspace,
@@ -64,6 +69,7 @@ export function App() {
   const [view, setView] = useState<WorkbenchView>(
     initial.selectedSessionId ? "session" : initial.drafts.length ? "repeater" : "capture",
   );
+  const [openedEntry, setOpenedEntry] = useState<Entry | null>(null);
   const [history, setHistory] = useState<Entry[]>([]);
   const [context, setContext] = useState<Entry[]>([]);
   const [traffic, setTraffic] = useState<Traffic[]>([]);
@@ -77,6 +83,7 @@ export function App() {
   const [notice, setNotice] = useState<{ text: string; ok: boolean } | null>(null);
   const [palette, setPalette] = useState(false);
   const [narrow, setNarrow] = useState(() => matchMedia("(max-width: 767px)").matches);
+  const [showVault, setShowVault] = useState(true);
   const [sidebar, setSidebar] = useState(() => !matchMedia("(max-width: 767px)").matches);
   const running = useRef<AbortController | null>(null);
   const {
@@ -88,10 +95,6 @@ export function App() {
   } = workspace;
   const t = dictionaries[locale];
   const project = workspace.projects.find((p) => p.id === projectId);
-  const projectName =
-    project?.id === "local" && project.name === "Local workspace"
-      ? t.localWorkspace
-      : (project?.name ?? t.workbench);
   const drafts = workspace.drafts.filter((d) => d.projectId === projectId);
   const openDrafts = workspace.openRequestIds
     .map((id) => drafts.find((d) => d.id === id))
@@ -99,7 +102,10 @@ export function App() {
   const draft = drafts.find((d) => d.id === selectedId) ?? drafts[0];
   const projectHistory = history.filter((e) => e.draft.projectId === projectId);
   const projectContext = context.filter((e) => e.draft.projectId === projectId);
-  const entry = projectHistory.find((e) => e.draft.id === draft?.id);
+  const entry =
+    openedEntry?.draft.id === draft?.id
+      ? (openedEntry ?? undefined)
+      : projectHistory.find((e) => e.draft.id === draft?.id);
   const session = workspace.sessions.find((s) => s.id === sessionId && s.projectId === projectId);
 
   useEffect(() => {
@@ -329,6 +335,7 @@ export function App() {
     }));
   }
   function openEntry(item: Entry) {
+    setOpenedEntry(item);
     setWorkspace((ws) => ({
       ...ws,
       drafts: ws.drafts.some((d) => d.id === item.draft.id)
@@ -344,6 +351,7 @@ export function App() {
   }
   async function run(target: Draft) {
     if (running.current) return;
+    setOpenedEntry(null);
     const controller = new AbortController();
     running.current = controller;
     setBusy(true);
@@ -382,7 +390,11 @@ export function App() {
   }
   function collect() {
     if (!entry?.result) return;
-    setContext((list) => (list.some((e) => e.id === entry.id) ? list : [...list, entry]));
+    setContext((list) =>
+      list.some((e) => e.id === entry.id)
+        ? list
+        : [...list, { ...entry, savedAt: new Date().toISOString() }],
+    );
     toast.success(t.collect);
   }
   function download(data: string, name: string, type = "application/json") {
@@ -392,6 +404,13 @@ export function App() {
     anchor.download = name;
     anchor.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  async function downloadCA() {
+    try {
+      download(await capture.certificate(), "acro-ca.pem", "application/x-pem-file");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error));
+    }
   }
   function saveResponse() {
     if (entry?.result) download(entry.result.body, "acro-response.txt", "text/plain");
@@ -413,7 +432,7 @@ export function App() {
         "acro-session.json",
       );
   }
-  const sidebarContent = (
+  const renderSidebar = (iconOnly: boolean, onClose?: () => void) => (
     <WorkspaceSidebar
       projects={workspace.projects}
       sessions={workspace.sessions}
@@ -430,21 +449,131 @@ export function App() {
       onSession={selectSession}
       onCreateProject={createProject}
       onNewSession={newSession}
-      onClose={() => setSidebar(false)}
+      iconOnly={iconOnly}
+      onClose={onClose}
       t={t}
     />
   );
-  const viewTitle = view === "session" ? session?.title || t.sessionDraft : t[view];
 
   return (
     <TooltipProvider delayDuration={400}>
-      <div className="flex h-dvh flex-col bg-canvas text-ink">
+      <div
+        className="acro-shell flex h-dvh flex-col bg-canvas text-ink"
+        data-collapsed={narrow || !sidebar}
+      >
+        <header className="acro-titlebar flex h-9 shrink-0 items-center">
+          <div
+            className={cn(
+              "flex h-full w-(--rail-width) shrink-0 items-center border-r border-hairline bg-rail",
+              sidebar && !narrow ? "justify-between pl-[21px] pr-3" : "justify-center",
+            )}
+          >
+            {sidebar && !narrow && <img className="acro-wordmark" src={wordmark} alt="Acro" />}
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label={sidebar && !narrow ? t.hideSidebar : t.showSidebar}
+              title={sidebar && !narrow ? t.hideSidebar : t.showSidebar}
+              onClick={() => setSidebar((v) => !v)}
+            >
+              {sidebar && !narrow ? <PanelLeftClose /> : <PanelLeftOpen />}
+            </Button>
+          </div>
+          <div className="ml-auto flex h-full shrink-0 items-center gap-0.5 px-2">
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label={t.commandPlaceholder}
+              onClick={() => setPalette(true)}
+            >
+              <Search />
+            </Button>
+            <Select
+              value={locale}
+              onValueChange={(value) => setWorkspace((ws) => ({ ...ws, locale: value as Locale }))}
+            >
+              <SelectPrimitive.Trigger asChild>
+                <Button variant="ghost" size="icon-sm" aria-label={t.language}>
+                  <Languages />
+                </Button>
+              </SelectPrimitive.Trigger>
+              <SelectContent align="end" position="popper">
+                <SelectGroup>
+                  {locales.map((item) => (
+                    <SelectItem key={item.value} value={item.value}>
+                      {item.label}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label={t.theme}
+              onClick={() =>
+                setWorkspace((ws) => ({
+                  ...ws,
+                  appearance:
+                    ws.appearance === "dark"
+                      ? "light"
+                      : ws.appearance === "light"
+                        ? "system"
+                        : "dark",
+                }))
+              }
+            >
+              {appearance === "dark" ? <Moon /> : appearance === "light" ? <Sun /> : <Monitor />}
+            </Button>
+            {view === "browser" && (
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label={t.credentials}
+                title={t.credentials}
+                aria-pressed={showVault}
+                onClick={() => setShowVault((v) => !v)}
+              >
+                <PanelRight />
+              </Button>
+            )}
+            {native && (
+              <div className="ml-1 flex items-center gap-0.5 border-l border-hairline pl-1">
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label={t.minimizeWindow}
+                  title={t.minimizeWindow}
+                  onClick={() => void currentWindow.minimize()}
+                >
+                  <Minus />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label={t.toggleMaximizeWindow}
+                  title={t.toggleMaximizeWindow}
+                  onClick={() => void currentWindow.toggleMaximize()}
+                >
+                  <Square />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label={t.closeWindow}
+                  title={t.closeWindow}
+                  onClick={() => void currentWindow.close()}
+                >
+                  <X />
+                </Button>
+              </div>
+            )}
+          </div>
+        </header>
         <div className="flex min-h-0 flex-1">
-          {!narrow && sidebar && (
-            <aside className="workspace-sidebar" aria-label={t.navigation}>
-              {sidebarContent}
-            </aside>
-          )}
+          <aside className="workspace-sidebar" aria-label={t.navigation}>
+            {renderSidebar(narrow || !sidebar)}
+          </aside>
           <Dialog open={narrow && sidebar} onOpenChange={setSidebar}>
             <DialogContent
               className="inset-y-0 left-0 top-0 flex h-dvh w-[min(18rem,90vw)] max-w-none translate-x-0 translate-y-0 flex-col gap-0 rounded-none bg-sidebar p-0"
@@ -452,83 +581,10 @@ export function App() {
               aria-describedby={undefined}
             >
               <DialogTitle className="sr-only">{t.navigation}</DialogTitle>
-              {narrow && sidebarContent}
+              {narrow && renderSidebar(false, () => setSidebar(false))}
             </DialogContent>
           </Dialog>
           <main className="flex min-w-0 flex-1 flex-col">
-            <header className="flex h-14 shrink-0 items-center gap-3 px-4 lg:px-5">
-              {(!sidebar || narrow) && (
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  aria-label={t.showSidebar}
-                  onClick={() => setSidebar(true)}
-                >
-                  <PanelLeft />
-                </Button>
-              )}
-              <div className="flex min-w-0 items-center gap-2 text-mini">
-                <FolderOpen className="size-4 shrink-0 text-muted-foreground" />
-                <span className="truncate">{view === "capture" ? t.workbench : projectName}</span>
-                <ChevronRight className="size-3 shrink-0 text-muted-foreground" />
-                <span className="truncate text-muted-foreground">{viewTitle}</span>
-              </div>
-              <div className="ml-auto flex shrink-0 items-center gap-1">
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  aria-label={t.commandPlaceholder}
-                  onClick={() => setPalette(true)}
-                >
-                  <Search />
-                </Button>
-                <Select
-                  value={locale}
-                  onValueChange={(value) =>
-                    setWorkspace((ws) => ({ ...ws, locale: value as Locale }))
-                  }
-                >
-                  <SelectPrimitive.Trigger asChild>
-                    <Button variant="ghost" size="icon-sm" aria-label={t.language}>
-                      <Languages />
-                    </Button>
-                  </SelectPrimitive.Trigger>
-                  <SelectContent align="end" position="popper">
-                    <SelectGroup>
-                      {locales.map((item) => (
-                        <SelectItem key={item.value} value={item.value}>
-                          {item.label}
-                        </SelectItem>
-                      ))}
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  aria-label={t.theme}
-                  onClick={() =>
-                    setWorkspace((ws) => ({
-                      ...ws,
-                      appearance:
-                        ws.appearance === "dark"
-                          ? "light"
-                          : ws.appearance === "light"
-                            ? "system"
-                            : "dark",
-                    }))
-                  }
-                >
-                  {appearance === "dark" ? (
-                    <Moon />
-                  ) : appearance === "light" ? (
-                    <Sun />
-                  ) : (
-                    <Monitor />
-                  )}
-                </Button>
-              </div>
-            </header>
             {view === "repeater" ? (
               <RequestTabs
                 drafts={openDrafts}
@@ -559,8 +615,8 @@ export function App() {
               <div
                 className={
                   view === "browser"
-                    ? "flex min-h-0 flex-1 flex-col overflow-hidden p-4 lg:p-5"
-                    : "flex min-h-0 flex-1 flex-col overflow-y-auto p-4 lg:p-5"
+                    ? "flex min-h-0 flex-1 flex-col overflow-hidden px-2 pt-3 pb-4 sm:px-4 lg:px-5"
+                    : "flex min-h-0 flex-1 flex-col overflow-y-auto px-2 pt-3 pb-4 sm:px-4 lg:px-5"
                 }
               >
                 {/* The browser places a native WebView in this view's slot. It
@@ -570,6 +626,7 @@ export function App() {
                   <BrowserView
                     projectId={projectId}
                     t={t}
+                    showVault={showVault}
                     suspended={palette || (narrow && sidebar)}
                   />
                 )}
@@ -605,6 +662,7 @@ export function App() {
                 {view === "context" && (
                   <ContextView
                     entries={projectContext}
+                    onOpen={openEntry}
                     onExport={exportContext}
                     onRemove={(id) => setContext((items) => items.filter((e) => e.id !== id))}
                     t={t}
@@ -613,6 +671,11 @@ export function App() {
                 {view === "session" && session && (
                   <SessionView
                     session={session}
+                    projectName={
+                      project?.id === "local" && project.name === "Local workspace"
+                        ? t.localWorkspace
+                        : (project?.name ?? t.workbench)
+                    }
                     onChange={patchSession}
                     onExport={exportSession}
                     onEvidence={() => navigate("context")}
@@ -624,7 +687,7 @@ export function App() {
             )}
           </main>
         </div>
-        <footer className="flex h-7 shrink-0 items-center gap-2 border-t border-hairline px-4 text-micro text-ink-muted">
+        <footer className="flex h-[26px] shrink-0 items-center gap-2 border-t border-hairline px-3 text-micro text-ink-muted">
           <StatusDot
             tone={notice && !notice.ok ? "fail" : captureSettings.running ? "ok" : "muted"}
           />
@@ -633,7 +696,9 @@ export function App() {
             <span className={cn("min-w-0 truncate", !notice.ok && "text-fail")}>{notice.text}</span>
           )}
           <span className="ml-auto shrink-0 tabular-nums">
-            {drafts.length} {drafts.length === 1 ? t.request.toLowerCase() : t.requestsCount}
+            {view === "capture"
+              ? `${traffic.length} ${t.captureTraffic.toLowerCase()}`
+              : `${drafts.length} ${drafts.length === 1 ? t.request.toLowerCase() : t.requestsCount}`}
           </span>
         </footer>
       </div>
@@ -673,6 +738,15 @@ export function App() {
               >
                 <Layers />
                 {t.context}
+              </CommandItem>
+              <CommandItem
+                onSelect={() => {
+                  setPalette(false);
+                  void downloadCA();
+                }}
+              >
+                <ArrowDownToLine />
+                {t.captureCertificate}
               </CommandItem>
               <CommandSeparator />
               <CommandItem

@@ -4,8 +4,7 @@ import {
   Check,
   Copy,
   Download,
-  Layers,
-  SendHorizontal,
+  Bookmark,
   Settings2,
   Trash2,
   X,
@@ -60,7 +59,7 @@ export function Repeater({
   t: Dictionary;
 }) {
   const [tab, setTab] = useState<"body" | "headers" | "raw">("body");
-  const [requestPretty, setRequestPretty] = useState(false);
+  const [requestPretty, setRequestPretty] = useState(true);
   const [pretty, setPretty] = useState(true);
   const [wrap, setWrap] = useState(true);
   const result = entry?.result;
@@ -85,7 +84,10 @@ export function Repeater({
           <PanelHeader title={t.request}>
             <CopyAction label={t.copy} value={draft.raw} />
           </PanelHeader>
-          <div className="flex h-6 shrink-0 items-center gap-2 border-b border-hairline bg-rail/60 px-3">
+          <div className="flex h-9 shrink-0 items-center gap-2 border-b border-hairline bg-rail/60 px-3">
+            {!requestPretty && (
+              <span className="rounded-sm bg-sidebar-accent px-1.5 py-0.5 text-xs">{t.raw}</span>
+            )}
             <Option checked={requestPretty} onCheck={setRequestPretty} label={t.pretty} />
             <span className="proto ml-auto text-ink-faint">HTTP/1.1</span>
           </div>
@@ -104,12 +106,7 @@ export function Repeater({
 
         <Panel>
           <PanelHeader title={t.response}>
-            <IconAction
-              label={t.collect}
-              icon={<Layers className="size-3.5" />}
-              disabled={!result}
-              onClick={onCollect}
-            />
+            {result && <StatusChip status={result.status} />}
             <CopyAction label={t.copy} value={text} disabled={!result} />
             <IconAction
               label={t.saveResponse}
@@ -133,9 +130,6 @@ export function Repeater({
                 </TabsTrigger>
               </TabsList>
             </Tabs>
-            <div className="ml-auto flex items-center gap-2">
-              {result ? <StatusChip status={result.status} /> : null}
-            </div>
           </div>
 
           {result ? (
@@ -192,6 +186,15 @@ export function Repeater({
           </footer>
         </Panel>
       </div>
+      {result && (
+        <div className="flex h-8 shrink-0 items-center gap-2">
+          <StatusChip status={result.status} />
+          <span className="proto text-ink-muted">{duration(result.durationMs)}</span>
+          <div className="ml-auto">
+            <IconAction label={t.collect} icon={<Bookmark />} onClick={onCollect} />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -216,23 +219,10 @@ function RequestBar({
   t: Dictionary;
 }) {
   return (
-    <div className="flex shrink-0 flex-col gap-2 pb-3">
-      <div className="flex flex-wrap items-center gap-2">
-        <Input
-          value={draft.name}
-          onChange={(e) => onChange({ name: e.target.value })}
-          aria-label={t.rename}
-          maxLength={100}
-          className="h-8 min-w-0 flex-1 border-hairline bg-panel text-body focus-visible:border-hairline focus-visible:ring-0"
-        />
-        <IconAction label={t.delete} icon={<Trash2 className="size-3.5" />} onClick={onDelete} />
-      </div>
+    <div className="mb-3 flex shrink-0 flex-col rounded-b-lg border border-t-0 bg-strip px-2.5 py-1">
       <div className="flex flex-wrap items-center gap-2">
         <span
-          className={cn(
-            "proto flex h-8 w-14 shrink-0 items-center justify-center rounded-md border border-hairline font-medium",
-            toneClass[outcomeOfMethod(method)],
-          )}
+          className={cn("proto shrink-0 font-medium", toneClass[outcomeOfMethod(method)])}
           aria-label={t.method}
         >
           {method}
@@ -242,26 +232,25 @@ function RequestBar({
           onChange={(e) => onChange({ target: e.target.value })}
           aria-label={t.target}
           placeholder="https://example.com"
-          className="h-8 min-w-0 flex-1 border-hairline bg-panel proto focus-visible:border-hairline focus-visible:ring-0"
+          className="h-[30px] min-w-0 flex-1 rounded-xl bg-field font-mono text-xs"
         />
         <Popover>
           <PopoverTrigger asChild>
-            <Button variant="ghost" size="icon-sm" aria-label={t.options}>
+            <Button variant="quiet-icon" size="icon-sm" aria-label={t.options} title={t.options}>
               <Settings2 />
             </Button>
           </PopoverTrigger>
           <PopoverContent align="end" className="w-72">
-            <RequestOptions draft={draft} onChange={onChange} t={t} />
+            <RequestOptions draft={draft} onChange={onChange} t={t} onDelete={onDelete} />
           </PopoverContent>
         </Popover>
         {busy ? (
-          <Button variant="outline" size="sm" className="h-8 w-full sm:w-28" onClick={onCancel}>
+          <Button variant="outline" size="sm" className="h-7" onClick={onCancel}>
             <X className="size-3.5" />
             {t.cancel}
           </Button>
         ) : (
-          <Button size="sm" className="h-8 w-full sm:w-28" onClick={onSend}>
-            <SendHorizontal className="size-3.5" />
+          <Button size="sm" className="h-7" onClick={onSend}>
             {t.send}
           </Button>
         )}
@@ -274,13 +263,23 @@ function RequestOptions({
   draft,
   onChange,
   t,
+  onDelete,
 }: {
   draft: Draft;
   onChange: (patch: Partial<Draft>) => void;
   t: Dictionary;
+  onDelete: () => void;
 }) {
   return (
     <div className="flex flex-col gap-4">
+      <label className="flex flex-col gap-1 text-mini">
+        {t.rename}
+        <Input
+          value={draft.name}
+          onChange={(event) => onChange({ name: event.target.value })}
+          maxLength={100}
+        />
+      </label>
       <label className="flex items-center gap-2 text-mini text-ink">
         <Checkbox
           checked={draft.followRedirects}
@@ -299,6 +298,10 @@ function RequestOptions({
         className="h-7 w-16 bg-canvas proto text-center focus-visible:border-hairline focus-visible:ring-0"
       />
       <span className="text-micro text-ink-faint">{t.seconds}</span>
+      <Button variant="destructive" size="sm" onClick={onDelete}>
+        <Trash2 data-icon="inline-start" />
+        {t.delete}
+      </Button>
     </div>
   );
 }

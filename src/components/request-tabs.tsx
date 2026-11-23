@@ -35,15 +35,15 @@ export function RequestTabs({
     <Tabs
       value={drafts.some((d) => d.id === selectedId) ? selectedId : ""}
       onValueChange={onSelect}
-      className="min-h-0 flex-1 gap-0"
+      className="min-h-0 flex-1 gap-0 px-2 pt-3 pb-4 sm:px-4 lg:px-5"
     >
-      <div className="flex min-w-0 shrink-0 border-b border-border bg-background">
+      <div className="flex h-[42px] min-w-0 shrink-0 items-center rounded-t-lg border bg-strip px-2">
         <div className="min-w-0 flex-1 overflow-x-auto">
           <TabsList variant="editor" aria-label={t.openRequests}>
             {drafts.map((d) => (
               <div
                 key={d.id}
-                className="group/request-tab relative flex shrink-0 items-center border-r border-border"
+                className="group/request-tab relative flex shrink-0 items-center"
                 data-selected={selectedId === d.id}
               >
                 <TabsTrigger
@@ -51,10 +51,10 @@ export function RequestTabs({
                   title={`${d.target}\n${requestLine(d.raw).path}`}
                   className="max-w-60 min-w-36 pr-9"
                 >
-                  <span className="proto text-ink-muted">{requestLine(d.raw).method || "GET"}</span>
-                  <span className="truncate">
-                    {d.captureNumber ? `#${d.captureNumber}` : d.name}
-                  </span>
+                  {d.captureNumber && (
+                    <span className="proto text-ink-muted">#{d.captureNumber}</span>
+                  )}
+                  <span className="truncate">{d.name}</span>
                 </TabsTrigger>
                 <Button
                   variant="ghost"
@@ -76,7 +76,7 @@ export function RequestTabs({
         </div>
       </div>
       {drafts.some((d) => d.id === selectedId) ? (
-        <TabsContent value={selectedId} className="flex min-h-0 flex-1 flex-col p-4 lg:p-5">
+        <TabsContent value={selectedId} className="flex min-h-0 flex-1 flex-col">
           {children}
         </TabsContent>
       ) : (

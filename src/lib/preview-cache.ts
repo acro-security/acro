@@ -23,6 +23,23 @@ export class PreviewCache {
     return entry.value;
   }
 
+  /** Retention shared by computed and streamed results. */
+  store(key: string, value: PrettyOutput) {
+    const bytes =
+      2 * (key.length + value.text.length + value.html.length + (value.notice?.length ?? 0));
+    if (bytes > this.maxBytes || this.maxEntries <= 0) return;
+    const previous = this.entries.get(key);
+    if (previous) this.bytes -= previous.bytes;
+    this.entries.set(key, { value, bytes });
+    this.bytes += bytes;
+    while (this.bytes > this.maxBytes || this.entries.size > this.maxEntries) {
+      const oldest = this.entries.keys().next().value!;
+      if (oldest === key) break;
+      this.bytes -= this.entries.get(oldest)!.bytes;
+      this.entries.delete(oldest);
+    }
+  }
+
   compute(key: string, create: () => Promise<PrettyOutput>): Promise<PrettyOutput> {
     const cached = this.get(key);
     if (cached) return Promise.resolve(cached);
@@ -31,17 +48,7 @@ export class PreviewCache {
     const job = Promise.resolve()
       .then(create)
       .then((value) => {
-        const bytes =
-          2 * (key.length + value.text.length + value.html.length + (value.notice?.length ?? 0));
-        if (bytes <= this.maxBytes && this.maxEntries > 0) {
-          this.entries.set(key, { value, bytes });
-          this.bytes += bytes;
-          while (this.bytes > this.maxBytes || this.entries.size > this.maxEntries) {
-            const oldest = this.entries.keys().next().value!;
-            this.bytes -= this.entries.get(oldest)!.bytes;
-            this.entries.delete(oldest);
-          }
-        }
+        this.store(key, value);
         return value;
       })
       .finally(() => this.pending.delete(key));

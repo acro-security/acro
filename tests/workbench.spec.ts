@@ -30,12 +30,12 @@ async function toRepeater(page: Page, tag = "fixture") {
     .getByRole("button")
     .filter({ hasText: `/echo?capture=${tag}` });
   await expect(row).toBeVisible();
-  const id = (await row.innerText()).match(/#(\d+)/)![1]!;
+  const id = (await row.getAttribute("aria-label"))!.match(/#(\d+)/)![1]!;
   await row.click({ button: "right" });
   await page.getByRole("menuitem", { name: "Send to repeater", exact: true }).click();
-  await expect(page.getByRole("tab", { name: `GET #${id}`, exact: true })).toBeVisible();
+  await expect(page.getByRole("tab", { name: new RegExp(`^#${id} `) })).toBeVisible();
   expect(
-    (await page.getByRole("tab", { name: `GET #${id}` }).boundingBox())!.height,
+    (await page.getByRole("tab", { name: new RegExp(`^#${id} `) }).boundingBox())!.height,
   ).toBeLessThanOrEqual(30);
   return id;
 }
@@ -73,12 +73,23 @@ test("capture IDs, Escape, replay popup, formatting and equal editor fonts", asy
     .getByRole("button")
     .filter({ hasText: "/echo?capture=fixture" });
   await row.click();
-  await expect(page.getByRole("dialog")).toBeVisible();
-  await expect(page.getByRole("dialog").locator(".shiki").first()).toBeVisible();
+  const details = page.getByRole("region", { name: /^Request #/ });
+  await expect(details).toBeVisible();
+  await expect(details.locator(".shiki").first()).toBeVisible();
+  const divider = page.getByRole("separator", { name: "Resize captured traffic" });
+  await expect(divider).toBeVisible();
+  const beforeResize = (await details.boundingBox())!.height;
+  await divider.focus();
+  await page.keyboard.press("ArrowDown");
+  await expect.poll(async () => (await details.boundingBox())!.height).toBeLessThan(beforeResize);
   await page.keyboard.down("Escape");
-  await expect(page.getByRole("dialog")).toBeHidden();
+  await expect(details).toBeHidden();
   await page.keyboard.up("Escape");
   const id = await toRepeater(page);
+  const requestPretty = page.getByRole("checkbox", { name: "Pretty", exact: true }).first();
+  await expect(requestPretty).toBeChecked();
+  await expect(page.locator(".syntax-preview").first()).toContainText("GET /echo");
+  await requestPretty.uncheck();
   const request = page.getByRole("textbox", { name: "Request", exact: true });
   const raw = await request.inputValue();
   const top = (await request.boundingBox())!.y;
@@ -95,7 +106,7 @@ test("capture IDs, Escape, replay popup, formatting and equal editor fonts", asy
     .evaluate((e) => getComputedStyle(e).fontSize);
   expect(requestFont).toBe(responseFont);
   expect(requestFont).toBe("12px");
-  const tabBox = (await page.getByRole("tab", { name: `GET #${id}` }).boundingBox())!;
+  const tabBox = (await page.getByRole("tab", { name: new RegExp(`^#${id} `) }).boundingBox())!;
   expect(tabBox.height).toBeLessThanOrEqual(30);
   await page.getByText("Pretty", { exact: true }).first().click();
   await expect(page.locator(".syntax-preview").first()).toContainText("GET /echo");
@@ -110,11 +121,17 @@ test("capture IDs, Escape, replay popup, formatting and equal editor fonts", asy
   await page.getByRole("button", { name: "Save evidence", exact: true }).click();
   await page.getByRole("button", { name: "Evidence", exact: true }).click();
   await expect(
-    page.getByRole("main").getByText("GET /echo", { exact: true }).first(),
+    page
+      .getByRole("main")
+      .getByText(/^GET \/echo/)
+      .first(),
   ).toBeVisible();
   await page.getByRole("button", { name: "History", exact: true }).click();
   await expect(
-    page.getByRole("main").getByText("GET /echo", { exact: true }).first(),
+    page
+      .getByRole("main")
+      .getByText(/^GET \/echo/)
+      .first(),
   ).toBeVisible();
   expect(errors).toEqual([]);
 });
@@ -126,18 +143,24 @@ test("captured tabs switch, close, reopen and persist without spawning blank dra
   await record(page, "two");
   await page.goto("/");
   const one = await toRepeater(page, "one");
+  await page.getByRole("button", { name: "Request options", exact: true }).click();
   await page.getByLabel("Request name").fill("Edited capture");
+  await page.keyboard.press("Escape");
   const two = await toRepeater(page, "two");
-  await page.getByRole("tab", { name: `GET #${one}` }).click();
-  await expect(page.getByLabel("Request name")).toHaveValue("Edited capture");
+  await page.getByRole("tab", { name: new RegExp(`^#${one} `) }).click();
+  await expect(page.getByRole("tab", { name: new RegExp(`^#${one} `) })).toContainText(
+    "Edited capture",
+  );
   await page.getByRole("button", { name: "Close request: Edited capture", exact: true }).click();
   await page.getByRole("button", { name: "Find request", exact: true }).click();
   await page.getByRole("dialog").getByRole("combobox").fill("Edited capture");
   await page.getByRole("option", { name: /Edited capture/ }).click();
   await page.reload();
-  await expect(page.getByRole("tab", { name: `GET #${one}` })).toBeVisible();
+  await expect(page.getByRole("tab", { name: new RegExp(`^#${one} `) })).toBeVisible();
+  await page.getByRole("button", { name: "Request options", exact: true }).click();
   await page.getByRole("button", { name: "Delete request", exact: true }).click();
-  await page.getByRole("tab", { name: `GET #${two}` }).click();
+  await page.getByRole("tab", { name: new RegExp(`^#${two} `) }).click();
+  await page.getByRole("button", { name: "Request options", exact: true }).click();
   await page.getByRole("button", { name: "Delete request", exact: true }).click();
   await expect(page.getByText("No open requests", { exact: true })).toBeVisible();
   await page.reload();
@@ -208,9 +231,10 @@ test("legacy workspaces retain requests through migration", async ({ page }) => 
       );
   });
   await page.goto("/");
-  await expect(page.getByRole("tab", { name: "GET Existing request", exact: true })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Existing request", exact: true })).toBeVisible();
   await expect(page.getByLabel("Target origin")).toHaveValue("https://saved.example.test");
   await page.reload();
+  await page.getByRole("checkbox", { name: "Pretty", exact: true }).first().uncheck();
   await expect(page.getByRole("textbox", { name: "Request", exact: true })).toHaveValue(
     "GET /preserved HTTP/1.1\nHost: saved.example.test\n\n",
   );
@@ -238,7 +262,8 @@ test("reopening capture details reuses previews without sending more worker jobs
   const row = () =>
     page.getByRole("main").getByRole("button").filter({ hasText: "/echo?capture=cache" });
   await row().click();
-  const previews = page.getByRole("dialog").locator(".syntax-preview");
+  const details = page.getByRole("region", { name: /^Request #/ });
+  const previews = details.locator(".syntax-preview");
   await expect(previews).toHaveCount(2);
   const jobs = () => page.evaluate(() => (window as Window & { previewJobs: number }).previewJobs);
   const initial = await jobs();
@@ -252,9 +277,9 @@ test("reopening capture details reuses previews without sending more worker jobs
   await row().click();
   await expect(previews).toHaveCount(2);
   expect(await jobs()).toBe(initial);
-  await page.getByRole("dialog").getByText("Pretty", { exact: true }).click();
+  await details.getByText("Pretty", { exact: true }).click();
   await expect(previews).toHaveCount(0);
-  await page.getByRole("dialog").getByText("Pretty", { exact: true }).click();
+  await details.getByText("Pretty", { exact: true }).click();
   await expect(previews).toHaveCount(2);
   expect(await jobs()).toBe(initial);
 });

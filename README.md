@@ -45,8 +45,9 @@ curl --proxy http://127.0.0.1:8081 http://example.com/
 ```
 
 Plain HTTP is recorded as it passes. HTTPS is read by terminating TLS with Acro's
-own certificate authority: download **CA certificate** from the Intercept view,
-trust it in the client, and decrypted requests appear beside their responses.
+own certificate authority: download **CA certificate** from the command palette
+(Ctrl/Command + K), trust it in the client, and decrypted requests appear beside
+their responses.
 
 ## Use it
 

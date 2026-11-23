@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -257,48 +258,15 @@ func metadata(v item) Account {
 	return a
 }
 
-// Origin checks remain mandatory even when a Bitwarden rule is broader.
-// Regex URI rules are unsupported and fail closed; Never is always excluded.
-func allowed(v item, rawURL string) bool {
-	if v.Type != 1 || v.Login == nil || v.DeletedDate != nil {
-		return false
-	}
-	origin, err := Origin(rawURL)
-	if err != nil {
-		return false
-	}
-	for _, entry := range v.Login.URIs {
-		if entry.Match != nil {
-			switch *entry.Match {
-			case 4, 5:
-				continue
-			case 3:
-				if rawURL != entry.URI {
-					continue
-				}
-			case 2:
-				if !strings.HasPrefix(rawURL, entry.URI) {
-					continue
-				}
-			}
-		}
-		if other, err := Origin(entry.URI); err == nil && other == origin {
-			return true
-		}
-	}
-	return false
-}
-func (m *Manager) List(ctx context.Context, rawURL string) ([]Account, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if err := m.unlocked(); err != nil {
-		return nil, err
-	}
+// The official CLI applies item URI rules, the account default and equivalent
+// domains. Keep that decision in Bitwarden rather than imposing an extra
+// exact-origin filter that silently drops valid SSO logins. Caller holds m.mu.
+func (m *Manager) matchingItems(ctx context.Context, rawURL string) ([]item, error) {
 	_, err := Origin(rawURL)
 	if err != nil {
 		return nil, err
 	}
-	data, err := m.call(ctx, "", "list", "items", "--nointeraction")
+	data, err := m.call(ctx, "", "list", "items", "--url", rawURL, "--nointeraction")
 	if err != nil {
 		return nil, err
 	}
@@ -306,11 +274,27 @@ func (m *Manager) List(ctx context.Context, rawURL string) ([]Account, error) {
 	if json.Unmarshal(data, &items) != nil {
 		return nil, errors.New("Bitwarden returned invalid accounts")
 	}
+	out := []item{}
+	for _, v := range items {
+		if v.Type == 1 && v.Login != nil && v.DeletedDate == nil {
+			out = append(out, v)
+		}
+	}
+	return out, nil
+}
+func (m *Manager) List(ctx context.Context, rawURL string) ([]Account, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.unlocked(); err != nil {
+		return nil, err
+	}
+	items, err := m.matchingItems(ctx, rawURL)
+	if err != nil {
+		return nil, err
+	}
 	out := []Account{}
 	for _, v := range items {
-		if allowed(v, rawURL) {
-			out = append(out, metadata(v))
-		}
+		out = append(out, metadata(v))
 	}
 	return out, nil
 }
@@ -329,19 +313,21 @@ func validID(id string) bool {
 	}
 	return true
 }
-func (m *Manager) get(ctx context.Context, id string) (item, error) {
+func (m *Manager) matchingItem(ctx context.Context, id, rawURL string) (item, error) {
 	var v item
 	if !validID(id) {
 		return v, errors.New("Invalid Bitwarden item ID")
 	}
-	data, err := m.call(ctx, "", "get", "item", id, "--nointeraction")
+	items, err := m.matchingItems(ctx, rawURL)
 	if err != nil {
 		return v, err
 	}
-	if json.Unmarshal(data, &v) != nil || v.ID != id {
-		return v, errors.New("Bitwarden returned an invalid account")
+	for _, matched := range items {
+		if matched.ID == id {
+			return matched, nil
+		}
 	}
-	return v, nil
+	return v, errors.New("This account is not authorized for the current page URL")
 }
 func (m *Manager) Credential(ctx context.Context, id, rawURL string) (Credential, error) {
 	m.mu.Lock()
@@ -353,12 +339,9 @@ func (m *Manager) Credential(ctx context.Context, id, rawURL string) (Credential
 	if err != nil {
 		return Credential{}, err
 	}
-	v, err := m.get(ctx, id)
+	v, err := m.matchingItem(ctx, id, rawURL)
 	if err != nil {
 		return Credential{}, err
-	}
-	if !allowed(v, rawURL) {
-		return Credential{}, errors.New("This account is not authorized for the current page origin")
 	}
 	return Credential{v.Login.Username, v.Login.Password}, nil
 }
@@ -379,8 +362,9 @@ func (m *Manager) Save(ctx context.Context, in SaveInput) (Account, error) {
 	v := map[string]any{"type": 1, "name": in.Name, "login": map[string]any{"username": in.Username, "password": in.Password, "uris": []uri{{URI: origin}}}}
 	args := []string{"create", "item"}
 	if in.ID != "" {
-		if !validID(in.ID) {
-			return Account{}, errors.New("Invalid Bitwarden item ID")
+		authorized, err := m.matchingItem(ctx, in.ID, in.URL)
+		if err != nil {
+			return Account{}, err
 		}
 		data, err := m.call(ctx, "", "get", "item", in.ID, "--nointeraction")
 		if err != nil {
@@ -390,8 +374,8 @@ func (m *Manager) Save(ctx context.Context, in SaveInput) (Account, error) {
 			return Account{}, errors.New("Bitwarden returned an invalid account")
 		}
 		var old item
-		if json.Unmarshal(data, &old) != nil || old.ID != in.ID || !allowed(old, in.URL) {
-			return Account{}, errors.New("This account is not authorized for the current page origin")
+		if json.Unmarshal(data, &old) != nil || old.ID != in.ID || old.Type != 1 || old.Login == nil || old.DeletedDate != nil || !reflect.DeepEqual(old.Login.URIs, authorized.Login.URIs) {
+			return Account{}, errors.New("Account changed before it could be edited; refresh and try again")
 		}
 		v["name"] = in.Name
 		l, _ := v["login"].(map[string]any)
@@ -446,12 +430,9 @@ func (m *Manager) Delete(ctx context.Context, id, rawURL string) error {
 	if err != nil {
 		return err
 	}
-	v, err := m.get(ctx, id)
+	_, err = m.matchingItem(ctx, id, rawURL)
 	if err != nil {
 		return err
-	}
-	if !allowed(v, rawURL) {
-		return errors.New("This account is not authorized for the current page origin")
 	}
 	_, err = m.call(ctx, "", "delete", "item", id, "--nointeraction")
 	return err

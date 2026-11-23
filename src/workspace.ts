@@ -17,6 +17,7 @@ export type Entry = {
   id: string;
   draft: Draft;
   at: string;
+  savedAt?: string;
   result?: ReplayResult;
   error?: string;
 };

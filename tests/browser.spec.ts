@@ -6,17 +6,21 @@ test("Browser is discoverable in web preview without pretending to embed a brows
 }) => {
   await page.goto("/");
   await page.getByRole("navigation").getByRole("button", { name: "Browser", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Browser", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Browser", exact: true })).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
   await expect(
     page.getByText("Website browsing and Bitwarden are available in the desktop app"),
   ).toBeVisible();
-  await expect(page.getByRole("button", { name: "Go", exact: true })).toBeDisabled();
+  await expect(page.getByRole("textbox", { name: "Website address" })).toBeDisabled();
   await expect(page.locator("iframe")).toHaveCount(0);
 });
 
 test("native Browser controls manage metadata and fill via credential references", async ({
   page,
 }) => {
+  await page.clock.install();
   await page.addInitScript(() => {
     const state = {
       tabs: [] as Array<{
@@ -32,7 +36,7 @@ test("native Browser controls manage metadata and fill via credential references
       selectedId: "",
     };
     let unlocked = false;
-    const accounts = [
+    const syncedAccounts = [
       {
         id: "11111111-2222-4333-8444-555555555555",
         name: "Test account",
@@ -40,8 +44,28 @@ test("native Browser controls manage metadata and fill via credential references
         origins: ["https://example.test"],
       },
     ];
+    const accounts: typeof syncedAccounts = [];
+    let accountGate: Promise<void> | null = null;
+    let releaseAccountGate = () => {};
     const listeners = new Map<string, Array<(data: unknown) => void>>();
-    const inspect = Object.assign(window, { fills: [] as unknown[], viewport: null as unknown });
+    const inspect = Object.assign(window, {
+      fills: [] as unknown[],
+      viewport: null as unknown,
+      syncs: 0,
+      accountQueries: 0,
+      holdNextStatus: false,
+      statusPending: false,
+      releaseStatus: () => {},
+      holdAccountRequests: () => {
+        accountGate = new Promise<void>((resolve) => {
+          releaseAccountGate = resolve;
+        });
+      },
+      releaseAccountRequests: () => {
+        releaseAccountGate();
+        accountGate = null;
+      },
+    });
     const notify = () => {
       for (const fn of listeners.get("browser:state") ?? []) fn(structuredClone(state));
     };
@@ -101,8 +125,17 @@ test("native Browser controls manage metadata and fill via credential references
               state.selectedId = state.tabs[0]?.id ?? "";
               notify();
               return structuredClone(state);
-            case "Vault.Status":
-              return status();
+            case "Vault.Status": {
+              const snapshot = status();
+              if (inspect.holdNextStatus) {
+                inspect.holdNextStatus = false;
+                inspect.statusPending = true;
+                await new Promise<void>((resolve) => {
+                  inspect.releaseStatus = resolve;
+                });
+              }
+              return snapshot;
+            }
             case "Vault.Unlock":
               unlocked = true;
               return status();
@@ -110,6 +143,8 @@ test("native Browser controls manage metadata and fill via credential references
               unlocked = false;
               return;
             case "Vault.Accounts":
+              inspect.accountQueries++;
+              if (accountGate) await accountGate;
               return structuredClone(accounts);
             case "Vault.Save": {
               const input = args[0] as { id: string; name: string; username: string };
@@ -131,6 +166,8 @@ test("native Browser controls manage metadata and fill via credential references
               );
               return;
             case "Vault.Sync":
+              await new Promise((resolve) => setTimeout(resolve, 50));
+              if (inspect.syncs++ === 0) accounts.push(...syncedAccounts);
               return;
             default:
               throw new Error(`Unexpected test call ${method}`);
@@ -144,11 +181,26 @@ test("native Browser controls manage metadata and fill via credential references
   await page.goto("/");
   await page.getByRole("navigation").getByRole("button", { name: "Browser", exact: true }).click();
   await page.getByLabel("Website address", { exact: true }).fill("https://example.test/login");
-  await page.getByRole("button", { name: "Go", exact: true }).click();
+  await page.getByLabel("Website address", { exact: true }).press("Enter");
   await expect(page.getByRole("tab", { name: "Login fixture", exact: true })).toBeVisible();
   await page.getByLabel("Master password", { exact: true }).fill("fixture-master-password");
   await page.getByRole("button", { name: "Unlock vault", exact: true }).click();
   await expect(page.getByText("Test account", { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => (window as Window & { syncs: number }).syncs)).toBe(1);
+  const queries = await page.evaluate(() => {
+    const fixture = window as Window & { holdAccountRequests(): void; accountQueries: number };
+    fixture.holdAccountRequests();
+    return fixture.accountQueries;
+  });
+  await page.getByRole("button", { name: "Sync vault", exact: true }).click();
+  await expect
+    .poll(() => page.evaluate(() => (window as Window & { accountQueries: number }).accountQueries))
+    .toBeGreaterThan(queries);
+  // A delayed refresh must leave the existing list visible.
+  await expect(page.getByText("Test account", { exact: true })).toBeVisible();
+  await page.evaluate(() =>
+    (window as Window & { releaseAccountRequests(): void }).releaseAccountRequests(),
+  );
   await page.getByRole("button", { name: "Fill account", exact: true }).click();
   expect(await page.evaluate(() => (window as Window & { fills: unknown[] }).fills)).toEqual([
     { tabId: "tab-1", credentialId: "11111111-2222-4333-8444-555555555555" },
@@ -181,7 +233,19 @@ test("native Browser controls manage metadata and fill via credential references
   expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain(
     "fixture-item-password",
   );
+  await page.evaluate(() => {
+    (window as Window & { holdNextStatus: boolean }).holdNextStatus = true;
+  });
+  await page.clock.fastForward(16000);
+  await expect
+    .poll(() => page.evaluate(() => (window as Window & { statusPending: boolean }).statusPending))
+    .toBe(true);
   await page.getByRole("button", { name: "Lock vault", exact: true }).click();
+  await expect(page.getByLabel("Master password", { exact: true })).toBeVisible();
+  // An earlier unlocked status response must not undo the user's lock action.
+  await page.evaluate(() => (window as Window & { releaseStatus(): void }).releaseStatus());
+  await page.clock.runFor(100);
+  await expect(page.getByLabel("Master password", { exact: true })).toBeVisible();
   await expect(page.getByLabel("Master password", { exact: true })).toHaveValue("");
   await expect(page.getByText("Test account", { exact: true })).toHaveCount(0);
   expect(errors).toEqual([]);

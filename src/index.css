@@ -1,8 +1,36 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
-@import "@fontsource-variable/inter";
-@import "@fontsource-variable/jetbrains-mono";
+@font-face {
+  font-family: "Geist";
+  src: url("./assets/fonts/Geist.ttf") format("truetype");
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Geist";
+  src: url("./assets/fonts/Geist-Medium.ttf") format("truetype");
+  font-weight: 500;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Geist";
+  src: url("./assets/fonts/Geist-SemiBold.ttf") format("truetype");
+  font-weight: 600;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Geist";
+  src: url("./assets/fonts/Geist-Bold.ttf") format("truetype");
+  font-weight: 700;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Geist Mono";
+  src: url("./assets/fonts/GeistMono.ttf") format("truetype");
+  font-weight: 400;
+  font-display: swap;
+}
 
 @custom-variant dark (&:is(.dark *));
 
@@ -13,9 +41,9 @@
   traffic — sending a request — plus focus and the chosen row.
 */
 @theme inline {
-  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Geist", ui-sans-serif, system-ui, sans-serif;
   --font-heading: var(--font-sans);
-  --font-mono: "JetBrains Mono Variable", ui-monospace, monospace;
+  --font-mono: "Geist Mono", ui-monospace, monospace;
 
   --color-canvas: var(--canvas);
   --color-panel: var(--panel);
@@ -35,17 +63,20 @@
   --color-card-foreground: var(--ink);
   --color-popover: var(--panel);
   --color-popover-foreground: var(--ink);
-  --color-primary: var(--intercept);
-  --color-primary-foreground: var(--intercept-ink);
+  --color-primary: var(--action);
+  --color-primary-foreground: var(--action-ink);
   --color-secondary: var(--rail);
   --color-secondary-foreground: var(--ink);
   --color-muted: var(--rail);
   --color-muted-foreground: var(--ink-muted);
-  --color-accent: var(--rail);
+  --color-accent: var(--rail-hover);
   --color-accent-foreground: var(--ink);
   --color-destructive: var(--fail);
   --color-border: var(--hairline);
   --color-input: var(--hairline);
+  --color-field: var(--field);
+  --color-strip: var(--strip);
+  --color-vault: var(--vault);
   --color-ring: var(--intercept);
   --color-sidebar: var(--rail);
   --color-sidebar-foreground: var(--ink-muted);
@@ -69,7 +100,12 @@
 }
 
 :root {
-  --canvas: #fbfbfc;
+  --canvas: #fbf9fc;
+  --strip: #f5f1f6;
+  --vault: #fbf6fa;
+  --field: #f5eff5;
+  --action: #2b2330;
+  --action-ink: #fff;
   --panel: #ffffff;
   --rail: #f6f6f7;
   --rail-hover: #ececee;
@@ -87,19 +123,24 @@
 }
 
 .dark {
-  --canvas: #08090a;
-  --panel: #121415;
-  --rail: #0e1011;
-  --rail-hover: #1b1e20;
-  --ink: #ecedee;
-  --ink-muted: #8b9096;
-  --ink-faint: #5f646a;
-  --hairline: #232527;
-  --intercept: #4d9fe0;
+  --canvas: #0e0c10;
+  --panel: #17161b;
+  --rail: #17171b;
+  --rail-hover: #2b2931;
+  --ink: #f1edf2;
+  --ink-muted: #b8afba;
+  --ink-faint: #a39aa8;
+  --hairline: #352e38;
+  --intercept: #a6cbfa;
   --intercept-ink: #08131c;
-  --ok: #4ec98a;
-  --warn: #e0a458;
-  --fail: #f0736f;
+  --ok: #95d4b1;
+  --warn: #e5bf91;
+  --fail: #f39191;
+  --strip: #1d1b22;
+  --vault: #1d171c;
+  --field: #251f27;
+  --action: #e8e1ea;
+  --action-ink: #201923;
   color-scheme: dark;
 }
 
@@ -151,7 +192,7 @@
   .workspace-sidebar {
     display: flex;
     flex-direction: column;
-    width: 260px;
+    width: var(--rail-width);
     flex-shrink: 0;
     min-height: 0;
     background: var(--rail);
@@ -173,7 +214,7 @@
 
 .message-code,
 textarea.message-code {
-  font-family: "JetBrains Mono Variable", monospace;
+  font-family: "Geist Mono", monospace;
   font-size: 12px;
   line-height: 20px;
   tab-size: 2;
@@ -194,4 +235,160 @@ textarea.message-code {
 .dark .syntax-preview .shiki,
 .dark .syntax-preview .shiki span {
   color: var(--shiki-dark) !important;
+}
+
+.acro-shell {
+  --rail-width: 222px;
+}
+.acro-shell[data-collapsed="true"] {
+  --rail-width: 50px;
+}
+@media (min-width: 768px) and (max-width: 1030px) {
+  .acro-shell[data-collapsed="false"] {
+    --rail-width: 172px;
+  }
+}
+.acro-titlebar {
+  --app-region: drag;
+}
+.acro-titlebar :is(button, [role="combobox"], a) {
+  --app-region: no-drag;
+}
+/* The title bar is 36px tall, so its controls sit at 26px with 14px glyphs;
+   the default 28px square would read as a second, competing row of controls. */
+.acro-titlebar [data-slot="button"] {
+  width: 28px;
+  height: 26px;
+}
+.acro-titlebar [data-slot="button"] svg {
+  width: 14px;
+  height: 14px;
+}
+.acro-wordmark {
+  width: 84px;
+  height: auto;
+  transform: translateY(2px);
+  filter: invert(1);
+}
+.dark .acro-wordmark {
+  filter: none;
+}
+.workbench-nav [data-slot="button"] {
+  position: relative;
+  isolation: isolate;
+  height: 40px;
+  background: transparent;
+}
+.workbench-nav [data-slot="button"]::before {
+  content: "";
+  position: absolute;
+  inset: 2px 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+}
+.workbench-nav [data-slot="button"]:is(:hover, [aria-current="page"])::before {
+  background: var(--rail-hover);
+}
+.acro-shell[data-collapsed="true"] .workspace-sidebar .workbench-nav button {
+  justify-content: center;
+  padding-inline: 0;
+}
+
+.capture-scroll {
+  --capture-head-height: 31px;
+  --capture-fade-size: 24px;
+  position: relative;
+  overscroll-behavior: contain;
+}
+.capture-scroll::before,
+.capture-scroll::after {
+  content: "";
+  position: sticky;
+  z-index: 2;
+  display: block;
+  height: var(--capture-fade-size);
+  pointer-events: none;
+  opacity: 0;
+  backdrop-filter: blur(4px);
+  background: linear-gradient(var(--capture-fade-direction), var(--panel) 5px, transparent 90%);
+  mask-image: linear-gradient(var(--capture-fade-direction), black 5px, transparent);
+}
+.capture-scroll::before {
+  --capture-fade-direction: to bottom;
+  top: calc(var(--capture-head-height) - 3px);
+  margin-bottom: calc(-1 * var(--capture-fade-size));
+}
+.capture-scroll::after {
+  --capture-fade-direction: to top;
+  bottom: 0;
+  margin-top: calc(-1 * var(--capture-fade-size));
+}
+.capture-scroll[data-above="true"]::before,
+.capture-scroll[data-below="true"]::after {
+  opacity: 1;
+}
+.capture-table {
+  min-width: 560px;
+}
+.capture-columns {
+  display: grid;
+  grid-template-columns: 4rem 4.5rem minmax(8rem, 1fr) minmax(10rem, 1.7fr) 4.5rem 4.5rem;
+  align-items: center;
+  gap: 8px;
+  padding-inline: 12px;
+}
+.capture-columns > :last-child {
+  text-align: right;
+}
+.capture-table-head {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  height: var(--capture-head-height);
+  border-bottom: 1px solid var(--hairline);
+  background: var(--strip);
+  color: var(--ink-faint);
+  font-size: var(--text-mini);
+}
+.capture-table-row {
+  position: relative;
+  min-height: 30px;
+  border-bottom: 1px solid var(--hairline);
+  font: 12px var(--font-mono);
+}
+.capture-table-row:is(:hover, [data-selected="true"]) {
+  background: var(--rail-hover);
+}
+.capture-open {
+  display: block;
+  max-width: 100%;
+  text-align: left;
+  cursor: pointer;
+}
+.capture-open::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+.capture-divider {
+  flex: none;
+  height: 5px;
+  background: var(--hairline);
+}
+.capture-divider:is(:hover, :focus-visible) {
+  background: var(--intercept);
+}
+
+[data-slot="tabs-list"][data-variant="editor"] {
+  gap: 4px;
+}
+[data-slot="tabs-list"][data-variant="editor"] [data-slot="tabs-trigger"] {
+  border-radius: 5px;
+}
+[data-slot="tabs-list"][data-variant="editor"] [data-slot="tabs-trigger"][data-state="active"] {
+  background: var(--rail-hover);
+}
+[data-slot="tabs-list"][data-variant="editor"] [data-slot="tabs-trigger"]::after {
+  display: none;
 }

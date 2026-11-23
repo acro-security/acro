@@ -31,6 +31,13 @@ func fixture(t *testing.T) *Manager {
 			}
 			return json.Marshal(map[string]string{"status": state, "serverUrl": "https://vault.test", "userEmail": "alice@test"})
 		case "list":
+			if len(args) != 5 || args[1] != "items" || args[2] != "--url" || args[4] != "--nointeraction" {
+				t.Fatalf("expected URL-filtered CLI query, got %v", args)
+			}
+			origin, _ := Origin(args[3])
+			if origin != "https://example.test" {
+				return []byte(`[]`), nil
+			}
 			return json.Marshal([]item{sample()})
 		case "get":
 			return json.Marshal(sample())
@@ -41,7 +48,7 @@ func fixture(t *testing.T) *Manager {
 	t.Cleanup(m.Lock)
 	return m
 }
-func TestMetadataAndExactOriginPolicy(t *testing.T) {
+func TestMetadataAndCredentialUseCLIAuthorization(t *testing.T) {
 	m := fixture(t)
 	ctx := context.Background()
 	accounts, err := m.List(ctx, "https://example.test:443/account")
@@ -149,8 +156,11 @@ func TestSaveSendsSecretsOnStdinAndPreservesOtherFields(t *testing.T) {
 cat > "$ACRO_TEST_CAPTURE"
 printf '%s' '{"id":"11111111-2222-4333-8444-555555555555","type":1,"name":"Saved","login":{"username":"alice","password":"fixture-secret","uris":[{"uri":"https://example.test"}]}}'`)
 	m.run = func(_ context.Context, args []string, _, _, _ string) ([]byte, error) {
+		if reflect.DeepEqual(args, []string{"list", "items", "--url", "https://example.test", "--nointeraction"}) {
+			return json.Marshal([]item{sample()})
+		}
 		if reflect.DeepEqual(args, []string{"get", "item", testID, "--nointeraction"}) {
-			return []byte(`{"id":"11111111-2222-4333-8444-555555555555","type":1,"notes":"keep","login":{"username":"old","password":"original","totp":"keep-totp","uris":[{"uri":"https://example.test"}]}}`), nil
+			return []byte(`{"id":"11111111-2222-4333-8444-555555555555","type":1,"notes":"keep","login":{"username":"old","password":"original","totp":"keep-totp","uris":[{"uri":"https://example.test/login"}]}}`), nil
 		}
 		return nil, errors.New("unexpected")
 	}
@@ -171,20 +181,48 @@ printf '%s' '{"id":"11111111-2222-4333-8444-555555555555","type":1,"name":"Saved
 	}
 }
 
-func TestRestrictedURIMatching(t *testing.T) {
-	for _, tc := range []struct {
-		mode   int
-		target string
-		want   bool
-	}{
-		{5, "https://example.test/login", false}, {4, "https://example.test/login", false},
-		{3, "https://example.test/login", true}, {3, "https://example.test/other", false},
-		{2, "https://example.test/login/next", true}, {2, "https://example.test/other", false},
-	} {
-		v := sample()
-		v.Login.URIs[0].Match = &tc.mode
-		if got := allowed(v, tc.target); got != tc.want {
-			t.Fatalf("mode %d on %s = %v", tc.mode, tc.target, got)
+func TestNativeMatchesAreNotDroppedByExactOriginFilter(t *testing.T) {
+	m := fixture(t)
+	const target = "https://id.tsinghua.edu.cn/login?service=learn"
+	v := sample()
+	v.Login.URIs = []uri{{URI: "https://learn.tsinghua.edu.cn"}}
+	deleted := v
+	deletedAt := "2026-01-01"
+	deleted.DeletedDate = &deletedAt
+	m.run = func(_ context.Context, args []string, _, _, _ string) ([]byte, error) {
+		if len(args) != 5 || args[0] != "list" || args[1] != "items" || args[2] != "--url" || args[4] != "--nointeraction" {
+			t.Fatalf("unfiltered query: %v", args)
+		}
+		if args[3] == target {
+			return json.Marshal([]item{v, deleted, {Type: 2}})
+		}
+		return []byte(`[]`), nil
+	}
+	accounts, err := m.List(context.Background(), target)
+	if err != nil || len(accounts) != 1 {
+		t.Fatalf("SSO match missing: %v %v", accounts, err)
+	}
+	credential, err := m.Credential(context.Background(), testID, target)
+	if err != nil || credential.Password != v.Login.Password {
+		t.Fatalf("matched credential unavailable: %v", err)
+	}
+	// A previously shown account must be rejected if the page no longer matches.
+	for _, target := range []string{"https://tsinghua.edu.cn.evil.test", "https://unrelated.test"} {
+		if _, err := m.Credential(context.Background(), testID, target); err == nil {
+			t.Fatalf("unmatched credential released for %s", target)
+		}
+		if err := m.Delete(context.Background(), testID, target); err == nil {
+			t.Fatalf("unmatched credential deleted for %s", target)
+		}
+	}
+}
+
+func TestCLIMatchingFailuresDoNotReleaseCredentials(t *testing.T) {
+	for _, response := range []string{`not-json`, `[]`, `[{"id":"11111111-2222-4333-8444-555555555555","type":1,"login":null}]`} {
+		m := fixture(t)
+		m.run = func(context.Context, []string, string, string, string) ([]byte, error) { return []byte(response), nil }
+		if _, err := m.Credential(context.Background(), testID, "https://example.test"); err == nil {
+			t.Fatalf("credential released from invalid match response %s", response)
 		}
 	}
 }

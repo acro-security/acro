@@ -134,6 +134,17 @@ Shiki-generated, escaped markup enters the preview. Formatting, decompression
 and syntax coloring affect the read-only preview, leaving the stored request
 and raw response untouched.
 
+The worker formats once and highlights on demand. It sends the prepared text,
+the highlighted HTTP head and the first body slice, then waits for a `render`
+message before making the next slice; the view asks for one when the reader
+nears the end of what it has. A 127 KB bundle therefore paints in tens of
+milliseconds and only costs the rest if it is read. Slices end on line breaks,
+a slice is highlighted without the newline it was cut at, and only the first
+slice carries Shiki's `<pre><code>` frame, so the seams neither shift colours
+nor add empty lines and the pane stays one continuous block. Unsubscribing
+cancels the job after a one-second grace period, which keeps a React remount
+from restarting work that is already running.
+
 Preview results are shared in a session-wide memory LRU cache (128 entries,
 32 MiB of retained strings). Cache keys include the complete source and MIME,
 encoding, compression and HTTP options. Concurrent identical requests share one
@@ -172,8 +183,12 @@ proxy settings; stopped capture has no direct fallback.
 profile and a memory-only unlock session. CLI errors are sanitized. Secrets enter
 child processes through environment/stdin rather than command arguments. The
 bound Vault facade returns only account metadata. Browser.Fill obtains the
-current native page URL, checks exact origin against stored URIs, rechecks after
-the credential lookup, and verifies origin and form action again in the page
+current native page URL and asks the official CLI for `list items --url` matches.
+Listing, filling, editing and deleting use that same authorization, respecting
+Bitwarden's URI rules instead of imposing an extra exact-origin filter on SSO
+sites. Unlocking triggers a background sync and refreshes the account list while
+offline cached entries remain usable if sync fails. Browser.Fill rechecks the
+native URL after the credential lookup, and verifies origin and form action in the page
 executor before writing visible input fields. It never submits the form.
 Future model tools must redact credential-bearing DOM and capture bodies before
 export; this patch introduces no model connection or raw credential tool.
