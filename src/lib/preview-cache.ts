@@ -5,9 +5,11 @@ export function previewKey(input: PrettyInput): string {
 }
 
 /** Shared across mounted views, bounded by retained string bytes and entry count. */
-export class PreviewCache {
-  private entries = new Map<string, { value: PrettyOutput; bytes: number }>();
-  private pending = new Map<string, Promise<PrettyOutput>>();
+export class PreviewCache<
+  T extends { text: string; html?: string; head?: string; notice?: string } = PrettyOutput,
+> {
+  private entries = new Map<string, { value: T; bytes: number }>();
+  private pending = new Map<string, Promise<T>>();
   private bytes = 0;
 
   constructor(
@@ -15,7 +17,7 @@ export class PreviewCache {
     private maxEntries = 128,
   ) {}
 
-  get(key: string): PrettyOutput | undefined {
+  get(key: string): T | undefined {
     const entry = this.entries.get(key);
     if (!entry) return undefined;
     this.entries.delete(key);
@@ -23,10 +25,14 @@ export class PreviewCache {
     return entry.value;
   }
 
-  /** Retention shared by computed and streamed results. */
-  store(key: string, value: PrettyOutput) {
+  store(key: string, value: T) {
     const bytes =
-      2 * (key.length + value.text.length + value.html.length + (value.notice?.length ?? 0));
+      2 *
+      (key.length +
+        value.text.length +
+        (value.html?.length ?? 0) +
+        (value.head?.length ?? 0) +
+        (value.notice?.length ?? 0));
     if (bytes > this.maxBytes || this.maxEntries <= 0) return;
     const previous = this.entries.get(key);
     if (previous) this.bytes -= previous.bytes;
@@ -40,7 +46,7 @@ export class PreviewCache {
     }
   }
 
-  compute(key: string, create: () => Promise<PrettyOutput>): Promise<PrettyOutput> {
+  compute(key: string, create: () => Promise<T>): Promise<T> {
     const cached = this.get(key);
     if (cached) return Promise.resolve(cached);
     const pending = this.pending.get(key);

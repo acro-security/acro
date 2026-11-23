@@ -13,7 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { CodeView } from "@/components/code-view";
+import { CodePreview, CodeView, useCodePreview } from "@/components/code-view";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -64,6 +64,22 @@ export function Repeater({
   const [wrap, setWrap] = useState(true);
   const result = entry?.result;
   const text = result ? responseText(result, tab, false) : "";
+  const responsePretty = tab !== "raw" && pretty;
+  const responsePreview = useCodePreview(
+    {
+      text,
+      mime:
+        tab === "body"
+          ? result?.headers.find((h) => h.name.toLowerCase() === "content-type")?.value
+          : "text/plain",
+      encoding: tab === "body" ? result?.encoding : undefined,
+      compression:
+        tab === "body"
+          ? result?.headers.find((h) => h.name.toLowerCase() === "content-encoding")?.value
+          : undefined,
+    },
+    !!result && responsePretty,
+  );
   const method = draft.raw.trim().split(/\s+/)[0]?.toUpperCase() || "GET";
 
   return (
@@ -107,7 +123,11 @@ export function Repeater({
         <Panel>
           <PanelHeader title={t.response}>
             {result && <StatusChip status={result.status} />}
-            <CopyAction label={t.copy} value={text} disabled={!result} />
+            <CopyAction
+              label={t.copy}
+              value={responsePreview?.text ?? text}
+              disabled={!result || (responsePretty && !responsePreview)}
+            />
             <IconAction
               label={t.saveResponse}
               icon={<Download className="size-3.5" />}
@@ -134,23 +154,7 @@ export function Repeater({
 
           {result ? (
             <>
-              <CodeView
-                text={text}
-                pretty={pretty}
-                wrap={wrap}
-                http={tab === "raw"}
-                mime={
-                  tab === "headers"
-                    ? "text/plain"
-                    : result.headers.find((h) => h.name.toLowerCase() === "content-type")?.value
-                }
-                encoding={tab === "headers" ? undefined : result.encoding}
-                compression={
-                  tab === "headers"
-                    ? undefined
-                    : result.headers.find((h) => h.name.toLowerCase() === "content-encoding")?.value
-                }
-              />
+              <CodePreview text={text} progress={responsePreview} wrap={wrap} />
               {result.truncated ? (
                 <p className="border-t border-hairline px-3 py-1 text-micro text-ink-faint">
                   {t.truncation}
@@ -176,7 +180,12 @@ export function Repeater({
           )}
 
           <footer className="flex h-8 shrink-0 items-center gap-4 border-t border-hairline bg-rail/60 px-3">
-            <Option checked={pretty} onCheck={setPretty} label={t.pretty} />
+            <Option
+              checked={responsePretty}
+              onCheck={setPretty}
+              label={t.pretty}
+              disabled={tab === "raw"}
+            />
             <Option checked={wrap} onCheck={setWrap} label={t.wrap} />
             {result ? (
               <span className="proto ml-auto tabular-nums text-ink-faint">
@@ -295,7 +304,7 @@ function RequestOptions({
         value={draft.timeoutSeconds}
         onChange={(e) => onChange({ timeoutSeconds: Number(e.target.value) || 30 })}
         aria-label={t.timeout}
-        className="h-7 w-16 bg-canvas proto text-center focus-visible:border-hairline focus-visible:ring-0"
+        className="h-7 w-16 bg-canvas proto text-center"
       />
       <span className="text-micro text-ink-faint">{t.seconds}</span>
       <Button variant="destructive" size="sm" onClick={onDelete}>
@@ -321,15 +330,18 @@ function Option({
   checked,
   onCheck,
   label,
+  disabled,
 }: {
   checked: boolean;
   onCheck: (v: boolean) => void;
   label: string;
+  disabled?: boolean;
 }) {
   return (
     <label className="flex items-center gap-1.5 text-micro text-ink-muted">
       <Checkbox
         checked={checked}
+        disabled={disabled}
         onCheckedChange={(v) => onCheck(v === true)}
         className="size-3.5"
       />

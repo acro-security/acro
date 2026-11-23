@@ -1,10 +1,10 @@
 import { expect, test } from "@playwright/test";
 
-/**
- * A body is highlighted on demand, so a large response must become readable
- * after one small slice and only grow when the pane is scrolled.
- */
-test("highlights a large body on demand and grows as the pane scrolls", async ({ page }) => {
+test("prefetches nearby chunks, releases distant ones and copies the full response", async ({
+  page,
+  context,
+}) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   const lines = Array.from(
     { length: 6000 },
     (_, i) => `export const value${i} = { id: ${i}, label: "item ${i}" };`,
@@ -63,31 +63,32 @@ test("highlights a large body on demand and grows as the pane scrolls", async ({
 
   const pane = page.getByTestId("code-view").last();
   const preview = pane.locator(".syntax-preview");
-  await expect(preview).toBeVisible({ timeout: 60000 });
-  await expect(preview.locator(".line").first()).toBeVisible();
+  const highlighted = preview.locator(".shiki");
+  await expect(highlighted.first()).toContainText("value0", { timeout: 60000 });
 
-  const counted = () => preview.locator(".line").count();
-  const first = await counted();
-  expect(first).toBeGreaterThan(20);
+  // The following chunk is highlighted while the viewport is still at the top.
+  const nextChunk = preview.locator('[data-code-chunk="1"] .shiki');
+  await expect(nextChunk).toContainText("value32");
+  expect((await nextChunk.boundingBox())!.y).toBeGreaterThan(
+    (await pane.boundingBox())!.y + (await pane.boundingBox())!.height,
+  );
+  expect(await pane.evaluate((el) => el.scrollTop)).toBe(0);
+  await expect(preview.getByText("value5999", { exact: true })).toHaveCount(0);
 
-  // Left alone, the pane must settle instead of colouring the whole body.
-  await page.waitForTimeout(2500);
-  const idle = await counted();
-  expect(idle).toBe(first);
+  await page.getByRole("button", { name: "Copy", exact: true }).last().click();
+  const copied = await page.evaluate(() => navigator.clipboard.readText());
+  expect(copied).toBe(lines);
 
-  // One continuous block: the frame is shipped once, not per slice.
-  await expect(preview.locator("pre")).toHaveCount(1);
+  await pane.evaluate((el) => {
+    el.scrollTop = el.scrollHeight;
+  });
+  await expect(highlighted.last()).toContainText("value5999");
+  await expect(preview.locator('[data-code-chunk="0"] pre')).toHaveCount(0);
+  expect(await highlighted.count()).toBeLessThan(10);
 
-  let previous = idle;
-  for (let i = 0; i < 60; i++) {
-    await pane.evaluate((el) => {
-      el.scrollTop = el.scrollHeight;
-    });
-    await page.waitForTimeout(200);
-    const now = await counted();
-    if (now === previous) break;
-    previous = now;
-  }
-  expect(previous).toBeGreaterThan(idle);
-  await expect(preview.locator("pre")).toHaveCount(1);
+  await pane.evaluate((el) => {
+    el.scrollTop = 0;
+  });
+  await expect(highlighted.first()).toContainText("value0");
+  await expect(preview.getByText("value5999", { exact: true })).toHaveCount(0);
 });

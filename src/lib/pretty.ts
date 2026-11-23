@@ -20,17 +20,7 @@ export type PrettyInput = {
  * headers, kept apart because they use the `http` grammar.
  */
 export type PrettyPrepared = { head: string; text: string; language: string; notice?: string };
-export type PrettySlice = { from: number; html: string };
 export type PrettyOutput = { text: string; html: string; notice?: string };
-const limit = 128 * 1024;
-/**
- * Minified sources are one long line, so cutting them at a byte count almost
- * always lands inside a string or expression: Prettier then rejects the
- * fragment and the whole preview falls back to unformatted text. Formatting
- * first and truncating the formatted result at a line boundary keeps both the
- * parser and the reader happy. This cap bounds how much work that costs.
- */
-const formatLimit = 1024 * 1024;
 const themes = { light: "github-light", dark: "github-dark" } as const;
 const highlighter = createHighlighterCore({
   themes: [import("shiki/themes/github-light.mjs"), import("shiki/themes/github-dark.mjs")],
@@ -82,7 +72,7 @@ async function decode(body: string, input: PrettyInput): Promise<string> {
         const { done, value } = await reader.read();
         if (done) break;
         size += value.length;
-        if (size > 2 * 1024 * 1024) throw new Error("Decoded preview exceeds 2 MB");
+        if (size > 2 * 1024 * 1024) throw new Error("Decompressed body exceeds 2 MB");
         chunks.push(value);
       }
     } finally {
@@ -138,21 +128,8 @@ export async function prepare(input: PrettyInput): Promise<PrettyPrepared> {
     source = "";
     notice = error instanceof Error ? error.message : String(error);
   }
-  if (head.length > limit) head = head.slice(0, limit);
-  let cutBeforeFormat = false;
-  if (source.length + head.length > limit) {
-    notice = "Pretty preview is limited to 128 KB — Raw contains the retained capture";
-    // The common case formats the whole body and truncates the result below, so
-    // the cut never splits a token. A body past the formatting budget has to be
-    // cut first; that fragment may no longer parse, so it is only highlighted.
-    if (source.length > formatLimit) {
-      source = source.slice(0, formatLimit);
-      cutBeforeFormat = true;
-      notice = "Pretty preview is limited to 1 MB — Raw contains the retained capture";
-    }
-  }
   const language = detectLanguage(source, mime);
-  if (!cutBeforeFormat && source && language !== "text") {
+  if (source && language !== "text") {
     try {
       source =
         language === "json"
@@ -168,53 +145,24 @@ export async function prepare(input: PrettyInput): Promise<PrettyPrepared> {
       notice = "Formatting failed — displaying the original content";
     }
   }
-  // Cut the formatted text, not the source: a line boundary keeps the preview
-  // readable and highlights without inventing a syntax error.
-  if (source.length > limit) {
-    const cut = source.lastIndexOf("\n", limit);
-    source = source.slice(0, cut > 0 ? cut : limit);
-  }
   return { head, text: source, language, notice };
 }
 
 export async function renderHead(prepared: PrettyPrepared): Promise<string> {
   if (!prepared.head) return "";
-  const h = await highlighter;
-  return h.codeToHtml(prepared.head, { lang: "http", themes, defaultColor: "light" });
+  return highlight(prepared.head, "http");
 }
 
-/**
- * Highlight one slice of the formatted body. Slices are cut at line breaks by
- * the caller so each is highlighted as whole lines; a highlight colour never
- * depends on a neighbouring slice, so the parts concatenate into the same HTML
- * one pass would produce.
- */
 export async function renderBody(
   prepared: PrettyPrepared,
   from: number,
   to: number,
 ): Promise<string> {
-  if (!prepared.text || to <= from) return "";
-  const h = await highlighter;
-  return h.codeToHtml(prepared.text.slice(from, to), {
-    lang: prepared.language,
-    themes,
-    defaultColor: "light",
-  });
+  return highlight(prepared.text.slice(from, to), prepared.language);
 }
 
-/**
- * Split Shiki's classic output into its `<pre><code>` frame and the line spans
- * it wraps. A body is highlighted slice by slice, and only the first slice
- * needs the frame: later slices append lines into the same block.
- */
-export function splitFrame(html: string): { open: string; lines: string; close: string } {
-  const start = html.indexOf("<code>");
-  const end = html.lastIndexOf("</code>");
-  if (start < 0 || end < 0) return { open: "", lines: html, close: "" };
-  return {
-    open: html.slice(0, start + "<code>".length),
-    lines: html.slice(start + "<code>".length, end),
-    close: html.slice(end),
-  };
+export async function highlight(text: string, language: string): Promise<string> {
+  if (!text) return "";
+  const h = await highlighter;
+  return h.codeToHtml(text, { lang: language, themes, defaultColor: "light" });
 }

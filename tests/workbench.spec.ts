@@ -136,6 +136,50 @@ test("capture IDs, Escape, replay popup, formatting and equal editor fonts", asy
   expect(errors).toEqual([]);
 });
 
+test("response copy follows the active tab and Pretty leaves Raw untouched", async ({
+  page,
+  context,
+}) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await record(page, "copy");
+  await page.goto("/");
+  await toRepeater(page, "copy");
+  await page.getByRole("button", { name: "Send request", exact: true }).click();
+
+  const response = page.getByTestId("code-view").last();
+  const copy = page.getByRole("button", { name: "Copy", exact: true }).last();
+  const pretty = page.getByRole("checkbox", { name: "Pretty", exact: true }).last();
+  const readClipboard = async () => {
+    await copy.click();
+    return page.evaluate(() => navigator.clipboard.readText());
+  };
+
+  await expect(response.locator(".shiki")).toContainText("Hello from Acro");
+  const formatted = await readClipboard();
+  expect(formatted).toContain('\n  "message": "Hello from Acro"');
+
+  await page.getByRole("tab", { name: "Headers", exact: true }).click();
+  const headers = await readClipboard();
+  expect(headers).toMatch(/^Content-Type: application\/json/im);
+  expect(headers).not.toContain("Hello from Acro");
+  expect(headers).not.toMatch(/^HTTP\//);
+
+  await page.getByRole("tab", { name: "Raw", exact: true }).click();
+  await expect(pretty).toBeDisabled();
+  await expect(response.locator(".shiki")).toHaveCount(0);
+  const raw = await readClipboard();
+  expect(raw).toMatch(/^HTTP\/1\.1 200/);
+  expect(raw).toContain(`\n${headers}\n\n`);
+  const body = raw.slice(raw.indexOf("\n\n") + 2);
+  expect(body.trim()).not.toContain("\n");
+  expect(formatted).toBe(JSON.stringify(JSON.parse(body), null, 2));
+
+  await page.getByRole("tab", { name: "Body", exact: true }).click();
+  await expect(pretty).toBeChecked();
+  await pretty.uncheck();
+  expect(await readClipboard()).toBe(body);
+});
+
 test("captured tabs switch, close, reopen and persist without spawning blank drafts", async ({
   page,
 }) => {

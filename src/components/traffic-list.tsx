@@ -62,7 +62,7 @@ export function TrafficList({
           onChange={(e) => onFilter(e.target.value)}
           placeholder={t.filter}
           aria-label={t.filter}
-          className="h-7 border-transparent bg-rail text-mini placeholder:text-ink-faint focus-visible:border-hairline focus-visible:ring-0"
+          className="h-7 border-transparent bg-rail text-mini placeholder:text-ink-faint"
         />
         <Kbd className="pointer-events-none absolute top-1.5 right-3.5 bg-transparent text-ink-faint">
           ⌘K

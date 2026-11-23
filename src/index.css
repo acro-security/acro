@@ -219,16 +219,13 @@ textarea.message-code {
   line-height: 20px;
   tab-size: 2;
 }
-.syntax-preview pre {
+.code-document pre {
   margin: 0;
   background: transparent !important;
   font: inherit;
 }
-.syntax-preview pre + pre {
-  margin-top: 20px;
-}
-.syntax-preview.code-wrap pre,
-.syntax-preview.code-wrap code {
+.code-document.code-wrap pre,
+.code-document.code-wrap code {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
