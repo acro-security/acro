@@ -1,7 +1,9 @@
-import { useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeftRight,
   Check,
+  ChevronDown,
+  ChevronUp,
   Copy,
   Download,
   Bookmark,
@@ -29,6 +31,7 @@ import {
 } from "@/workspace";
 import type { Dictionary } from "@/i18n";
 import { cn } from "@/lib/utils";
+import { findCodeMatches } from "@/lib/code-search";
 
 /**
  * Repeater is the workbench itself: a request and the response it produced,
@@ -62,6 +65,11 @@ export function Repeater({
   const [requestPretty, setRequestPretty] = useState(true);
   const [pretty, setPretty] = useState(true);
   const [wrap, setWrap] = useState(true);
+  const [findOpen, setFindOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [matchIndex, setMatchIndex] = useState(0);
+  const findInput = useRef<HTMLInputElement>(null);
+  const beforeFind = useRef<HTMLElement | null>(null);
   const result = entry?.result;
   const text = result ? responseText(result, tab, false) : "";
   const responsePretty = tab !== "raw" && pretty;
@@ -80,6 +88,54 @@ export function Repeater({
     },
     !!result && responsePretty,
   );
+  const searchText = responsePreview?.text ?? (responsePretty ? "" : text);
+  const matches = useMemo(
+    () => findCodeMatches(searchText, findOpen ? query : ""),
+    [searchText, findOpen, query],
+  );
+  const currentIndex = matches.length ? Math.min(matchIndex, matches.length - 1) : 0;
+  const canFind = !!result;
+  const closeFind = useCallback(() => {
+    setFindOpen(false);
+    beforeFind.current?.focus({ preventScroll: true });
+  }, []);
+
+  useEffect(() => {
+    if (!findOpen) return;
+    findInput.current?.focus();
+    findInput.current?.select();
+  }, [canFind, findOpen]);
+
+  useEffect(() => {
+    if (!canFind) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (
+        event.defaultPrevented ||
+        event.isComposing ||
+        (event.target instanceof Element && event.target.closest('[role="dialog"]'))
+      )
+        return;
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "f") {
+        event.preventDefault();
+        if (findOpen) {
+          findInput.current?.focus();
+          findInput.current?.select();
+        } else {
+          beforeFind.current = document.activeElement as HTMLElement | null;
+          setFindOpen(true);
+        }
+      } else if (findOpen && event.key === "Escape") {
+        event.preventDefault();
+        closeFind();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [canFind, closeFind, findOpen]);
+
+  function moveMatch(delta: number) {
+    if (matches.length) setMatchIndex((currentIndex + delta + matches.length) % matches.length);
+  }
   const method = draft.raw.trim().split(/\s+/)[0]?.toUpperCase() || "GET";
 
   return (
@@ -137,7 +193,13 @@ export function Repeater({
           </PanelHeader>
 
           <div className="flex h-9 shrink-0 items-center gap-2 border-b border-hairline bg-rail/60 px-3">
-            <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)}>
+            <Tabs
+              value={tab}
+              onValueChange={(v) => {
+                setTab(v as typeof tab);
+                setMatchIndex(0);
+              }}
+            >
               <TabsList className="h-7 bg-transparent p-0">
                 <TabsTrigger value="body" className="h-6 px-2 text-micro">
                   {t.body}
@@ -152,9 +214,67 @@ export function Repeater({
             </Tabs>
           </div>
 
+          {result && findOpen && (
+            <div
+              role="search"
+              aria-label={t.findResponse}
+              className="flex shrink-0 items-center gap-1 border-b border-hairline bg-strip px-2 py-1"
+              onKeyDown={(event) => {
+                if (
+                  event.key !== "Enter" ||
+                  event.nativeEvent.isComposing ||
+                  event.target !== findInput.current
+                )
+                  return;
+                event.preventDefault();
+                event.stopPropagation();
+                moveMatch(event.shiftKey ? -1 : 1);
+              }}
+            >
+              <Input
+                ref={findInput}
+                value={query}
+                aria-label={t.findResponse}
+                placeholder={t.findResponse}
+                onChange={(event) => {
+                  setQuery(event.target.value);
+                  setMatchIndex(0);
+                }}
+                autoComplete="off"
+                spellCheck={false}
+                className="h-7 flex-1 bg-field text-mini"
+              />
+              <span
+                role="status"
+                className="px-1 text-micro whitespace-nowrap text-ink-muted tabular-nums"
+              >
+                {query && `${matches.length ? currentIndex + 1 : 0} / ${matches.length}`}
+              </span>
+              <IconAction
+                label={t.previousMatch}
+                icon={<ChevronUp />}
+                disabled={!matches.length}
+                onClick={() => moveMatch(-1)}
+              />
+              <IconAction
+                label={t.nextMatch}
+                icon={<ChevronDown />}
+                disabled={!matches.length}
+                onClick={() => moveMatch(1)}
+              />
+              <IconAction label={t.close} icon={<X />} onClick={closeFind} />
+            </div>
+          )}
+
           {result ? (
             <>
-              <CodePreview text={text} progress={responsePreview} wrap={wrap} />
+              <CodePreview
+                text={text}
+                progress={responsePreview}
+                wrap={wrap}
+                matches={matches}
+                current={matches[currentIndex]}
+              />
               {result.truncated ? (
                 <p className="border-t border-hairline px-3 py-1 text-micro text-ink-faint">
                   {t.truncation}
@@ -182,7 +302,10 @@ export function Repeater({
           <footer className="flex h-8 shrink-0 items-center gap-4 border-t border-hairline bg-rail/60 px-3">
             <Option
               checked={responsePretty}
-              onCheck={setPretty}
+              onCheck={(value) => {
+                setPretty(value);
+                setMatchIndex(0);
+              }}
               label={t.pretty}
               disabled={tab === "raw"}
             />

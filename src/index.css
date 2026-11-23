@@ -233,6 +233,14 @@ textarea.message-code {
 .dark .syntax-preview .shiki span {
   color: var(--shiki-dark) !important;
 }
+.code-match {
+  background: color-mix(in oklab, var(--warn) 32%, transparent);
+  color: inherit;
+}
+.code-match[data-current="true"] {
+  background: var(--intercept);
+  color: var(--intercept-ink);
+}
 
 .acro-shell {
   --rail-width: 222px;

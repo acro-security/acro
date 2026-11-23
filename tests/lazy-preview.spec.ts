@@ -91,4 +91,24 @@ test("prefetches nearby chunks, releases distant ones and copies the full respon
   });
   await expect(highlighted.first()).toContainText("value0");
   await expect(preview.getByText("value5999", { exact: true })).toHaveCount(0);
+
+  await page.keyboard.press("Control+f");
+  const find = page.getByRole("textbox", { name: "Find in response" });
+  await expect(find).toBeFocused();
+  await find.fill('LABEL: "item 599');
+  const count = page.getByRole("search", { name: "Find in response" }).getByRole("status");
+  const active = pane.locator('mark[data-current="true"]');
+  await expect(count).toHaveText("1 / 11");
+  await expect(active.first()).toBeInViewport();
+  await find.press("Shift+Enter");
+  await expect(count).toHaveText("11 / 11");
+  await expect(active.first()).toBeInViewport();
+  await expect(preview.locator('[data-code-chunk="0"] pre')).toHaveCount(0);
+  await expect.poll(async () => (await active.allTextContents()).join("")).toBe('label: "item 599');
+  await find.press("Enter");
+  await expect(count).toHaveText("1 / 11");
+  await expect(active.first()).toBeInViewport();
+  await find.press("Escape");
+  await expect(find).toHaveCount(0);
+  await expect(active).toHaveCount(0);
 });

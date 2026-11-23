@@ -178,6 +178,18 @@ test("response copy follows the active tab and Pretty leaves Raw untouched", asy
   await expect(pretty).toBeChecked();
   await pretty.uncheck();
   expect(await readClipboard()).toBe(body);
+
+  await page.keyboard.press("Control+f");
+  const find = page.getByRole("textbox", { name: "Find in response" });
+  const count = page.getByRole("search", { name: "Find in response" }).getByRole("status");
+  await find.fill("Content-Type:");
+  await expect(count).toHaveText("0 / 0");
+  await page.getByRole("tab", { name: "Headers", exact: true }).click();
+  await expect(count).toHaveText("1 / 1");
+  await expect(response.locator("mark")).toHaveText("Content-Type:");
+  await page.getByRole("tab", { name: "Raw", exact: true }).click();
+  await expect(count).toHaveText("1 / 1");
+  await expect(response.locator("mark")).toHaveText("Content-Type:");
 });
 
 test("captured tabs switch, close, reopen and persist without spawning blank drafts", async ({
